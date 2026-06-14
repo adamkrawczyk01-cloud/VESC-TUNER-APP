@@ -237,6 +237,7 @@ static FwVersion gFwVer;
 
 static bool     gBleOk   = false;
 static bool     gRec     = false;
+static bool     gAutoArmed = false;     // auto-start logging on next motion
 static bool     gSdOk    = false;
 static int      gScreen  = 0;           // 0 HUD 1 TRIP 2 FAULT 3 BACKUP 4 RESTORE 5 BOARD 6 CONFIG 7 REVIEW 8 APPLY
 #define SC_COUNT 10
@@ -675,6 +676,7 @@ struct ClientCB : public NimBLEClientCallbacks {
     void onDisconnect(NimBLEClient*, int)    override {
         gBleOk = false; gV.valid = false;
         gCanId = -1; gCanDiscovered = false; gAccLen = 0; gRxReady = false;
+        gRec = false;            // board off → stop & finalize the log
     }
 } gClientCB;
 
@@ -916,6 +918,7 @@ static bool bleConnect(const NimBLEAddress& addr) {
         prefs.end();
         Serial.printf("[BLE] saved last board %s (%s)\n", addr.toString().c_str(), nm);
     }
+    gAutoArmed = true;           // arm auto-logging for this fresh connection
     // ─────────────────────────────────────────────────────────────────────────
 
     return true;
@@ -957,12 +960,26 @@ static void sdInit() {
     snprintf(gSessName, sizeof(gSessName), "session_%03d", gSessNum);
 }
 
+// Pick the next free session_NNN name (a new file per ride / power-cycle)
+static void nextSession() {
+    for (int n = 1; n <= 999; n++) {
+        char p[64]; snprintf(p, sizeof(p), "/sessions/session_%03d.csv", n);
+        if (!SD.exists(p)) { gSessNum = n; break; }
+    }
+    snprintf(gSessName, sizeof(gSessName), "session_%03d", gSessNum);
+}
+
+// Full telemetry header — log EVERYTHING (SD is roomy). Fixed 20 cell columns.
 static void csvWriteHeader() {
     char path[64]; snprintf(path, sizeof(path), "/sessions/%s.csv", gSessName);
     File f = SD.open(path, FILE_WRITE);
     if (!f) return;
-    f.println("ts_ms,speed_kmh,rpm,voltage_V,curr_in_A,curr_mot_A,"
-              "duty_pct,temp_fet_C,temp_mot_C,amp_hours,tacho");
+    f.print("ts_ms,speed_kmh,rpm,voltage_V,vcell_V,curr_in_A,curr_mot_A,power_W,duty_pct,");
+    f.print("temp_fet_C,temp_mot_C,temp_bat_C,pitch_deg,roll_deg,setpoint_deg,atr_deg,torquetilt_deg,turntilt_deg,");
+    f.print("adc1,adc2,booster_A,foc_id_A,state,amp_hours,tacho,");
+    f.print("bms_v_tot,bms_i_in,cell_min,cell_max,cell_delta_mV");
+    for (int i = 1; i <= 20; i++) f.printf(",cell_%02d", i);
+    f.println();
     f.close();
 }
 
@@ -971,11 +988,47 @@ static void csvAppend() {
     char path[64]; snprintf(path, sizeof(path), "/sessions/%s.csv", gSessName);
     File f = SD.open(path, FILE_APPEND);
     if (!f) return;
-    f.printf("%lu,%.1f,%.0f,%.2f,%.2f,%.2f,%.1f,%.1f,%.1f,%.4f,%ld\n",
-        millis(), gV.speed_kmh, gV.rpm, gV.voltage,
-        gV.curr_in, gV.curr_mot, gV.duty_pct,
-        gV.temp_fet, gV.temp_mot, gV.amp_hours, gV.tacho);
+    float vcell = gProfile.batt_cells ? gV.voltage / gProfile.batt_cells : 0;
+    float power = gV.voltage * gV.curr_in;
+    float cmn = 0, cmx = 0, cd = 0;
+    if (gBms.cellNum > 0) {
+        cmn = 99; cmx = 0;
+        for (int i = 0; i < gBms.cellNum; i++) { float v = gBms.cell[i]; if (v < cmn) cmn = v; if (v > cmx) cmx = v; }
+        cd = (cmx - cmn) * 1000.f;
+    }
+    f.printf("%lu,%.2f,%.0f,%.2f,%.3f,%.2f,%.2f,%.0f,%.1f,",
+             (unsigned long)millis(), gV.speed_kmh, gV.rpm, gV.voltage, vcell,
+             gV.curr_in, gV.curr_mot, power, gV.duty_pct);
+    f.printf("%.1f,%.1f,%.1f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,",
+             gV.temp_fet, gV.temp_mot, gV.bms ? gV.temp_bat : 0.f,
+             gV.pitch, gV.roll, gV.setpoint, gV.atr_set, gV.torque_tilt, gV.turn_tilt);
+    f.printf("%.3f,%.3f,%.1f,%.1f,%d,%.4f,%ld,",
+             gV.adc1, gV.adc2, gV.booster, gV.foc_id, gV.state, gV.amp_hours, (long)gV.tacho);
+    f.printf("%.2f,%.2f,%.3f,%.3f,%.0f",
+             gBms.vTot, gBms.iIn, cmn, cmx, cd);
+    for (int i = 0; i < 20; i++) {
+        if (i < gBms.cellNum) f.printf(",%.3f", gBms.cell[i]); else f.print(",");
+    }
+    f.println();
     f.close();
+}
+
+// Recording session control (manual [R] + auto-start on motion)
+static void startSession() {
+    if (gRec || !gSdOk) return;
+    nextSession();
+    memset(&gStat, 0, sizeof(gStat));
+    gStat.min_volt = 100.f; gStat.start_ah = -1.f;
+    gTripMs = millis();
+    csvWriteHeader();
+    gRec = true;
+    vescSend(CMD_GET_MCCONF);   // refresh config snapshot for the session
+    Serial.printf("[LOG] start %s\n", gSessName);
+}
+static void stopSession() {
+    if (!gRec) return;
+    gRec = false;
+    Serial.printf("[LOG] stop %s\n", gSessName);
 }
 
 // logChange() removed — READ-ONLY mode
@@ -1446,19 +1499,11 @@ static void handleKeys() {
             continue;
         }
 
-        // HUD (0) — recording controls
-        if (gScreen == 0) {
-            if (c == 'l' && !gRec && gSdOk) {
-                gRec = true;
-                gTripMs = millis();
-                memset(&gStat, 0, sizeof(gStat));
-                gStat.min_volt = 100.f; gStat.start_ah = -1.f;
-                csvWriteHeader();
-                vescSend(CMD_GET_MCCONF);
-                delay(600);
-                vescSend(CMD_GET_APPCONF);
-            }
-            if (c == 's' && gRec) gRec = false;
+        // RIDE (0) — [R] toggles logging. Manual stop disarms auto-start
+        // until the board reconnects (power-cycle = fresh log).
+        if (gScreen == 0 && c == 'r') {
+            if (gRec) { stopSession(); gAutoArmed = false; }
+            else      { startSession(); }
         }
 
         // BACKUP/RESTORE (5) — [B] create backup, cursor to pick a restore point
@@ -2169,6 +2214,12 @@ void loop() {
                     break;
             }
         }
+    }
+
+    // Auto-start logging when the board starts moving (RUNNING / speed > 2 km/h)
+    if (gBleOk && gAutoArmed && !gRec && gSdOk && gV.valid &&
+        (gV.speed_kmh > 2.f || (gV.refloat && gV.state == 1))) {
+        startSession();
     }
 
     // Stats + CSV logging
