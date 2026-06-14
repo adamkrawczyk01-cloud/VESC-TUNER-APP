@@ -65,6 +65,8 @@
 #define REFLOAT_GET_ALLDATA 10
 #define CMD_GET_CUSTOM_CONFIG 93 // 0x5D — read Refloat package config (raw bytes)
 #define CMD_BMS_GET_VALUES    96 // 0x60 — Smart BMS values (incl. temperatures)
+#define CMD_GET_VALUES_SETUP  47 // 0x2F — battery %, odometer, totals summed over CAN
+#define CMD_GET_IMU_DATA      65 // 0x41 — raw IMU (accel/gyro/yaw)
 
 // ── Display dimensions ───────────────────────────────────────────────────────
 #define DW 240
@@ -155,6 +157,12 @@ struct VescVals {
     float watt_hours = 0, wh_charged = 0, ah_charged = 0;  // energy counters
     int32_t tacho_abs = 0;                // absolute tachometer
     uint8_t fault   = 0;                  // mc_fault_code (0 = none)
+    float batt_pct  = 0, odo_km = 0, batt_wh = 0;          // GET_VALUES_SETUP (47)
+    bool  setup     = false;
+    float yaw       = 0;                                   // raw IMU (65)
+    float acc_x = 0, acc_y = 0, acc_z = 0;
+    float gyro_x = 0, gyro_y = 0, gyro_z = 0;
+    bool  imu       = false;
     uint8_t state   = 0;                  // Refloat state_compat (low nibble)
     bool  refloat   = false;              // true once GET_ALLDATA replied
     float temp_bat  = 0;                  // hottest BMS sensor (Smart BMS over CAN)
@@ -256,7 +264,10 @@ static char     gSessName[32] = {};
 static uint32_t gLastValMs = 0;
 static uint32_t gLastAllMs = 0;
 static uint32_t gLastBmsMs = 0;
+static uint32_t gLastSetupMs = 0;
+static uint32_t gLastImuMs = 0;
 static int      gBmsDbgN   = 0;          // serial-dump first few BMS replies
+static int      gSetupDbgN = 0, gImuDbgN = 0;
 static uint32_t gLastCsvMs = 0;
 static uint32_t gTripMs    = 0;
 
@@ -303,6 +314,10 @@ static int32_t rdI32(const uint8_t* b, int o) {
 }
 static int16_t rdI16(const uint8_t* b, int o) {
     return ((int16_t)b[o]<<8)|(int16_t)b[o+1];
+}
+static float rdF32be(const uint8_t* b, int o) {   // IEEE-754 float, big-endian
+    uint32_t u = ((uint32_t)b[o]<<24)|((uint32_t)b[o+1]<<16)|((uint32_t)b[o+2]<<8)|(uint32_t)b[o+3];
+    float f; memcpy(&f, &u, 4); return f;
 }
 
 // Build framed VESC packet → out[]; return total length
@@ -494,6 +509,46 @@ static void parseBms(const uint8_t* p, int len) {
     }
     gBms.valid = (cn > 0);
     if (cn > 0) gV.bms = true;
+}
+
+// Request raw IMU (mask 0x01FF = roll,pitch,yaw,acc xyz,gyro xyz).
+static void vescSendImu() {
+    if (!gCharRx || !gBleOk) return;
+    uint8_t pay[6]; int plen = 0;
+    if (gCanId >= 0) { pay[plen++] = CMD_FORWARD_CAN; pay[plen++] = (uint8_t)gCanId; }
+    pay[plen++] = CMD_GET_IMU_DATA;
+    pay[plen++] = 0x01; pay[plen++] = 0xFF;          // field mask
+    uint8_t pkt[16]; int len = buildPkt(pkt, pay, plen);
+    gTxCount++;
+    gCharRx->writeValue(pkt, len, !gUseWriteNoResp);
+}
+
+// COMM_GET_VALUES_SETUP (47) — battery %, odometer, totals summed over CAN.
+static void parseSetup(const uint8_t* p, int len) {
+    if (len < 23) return;
+    gV.batt_pct = rdI16(p, 21) / 1000.f * 100.f;     // battery_level 0..1 → %
+    if (len >= 57) {
+        gV.batt_wh = rdI32(p, 49) / 1000.f;          // battery Wh left
+        uint32_t odo = ((uint32_t)p[53]<<24)|((uint32_t)p[54]<<16)|((uint32_t)p[55]<<8)|p[56];
+        gV.odo_km = odo / 1000.f;                    // odometer metres → km
+    }
+    gV.setup = true;
+}
+
+// COMM_GET_IMU_DATA (65) — [cmd][mask:2][float32 × set-bits]. Mask 0x01FF order:
+// roll, pitch, yaw, acc x/y/z, gyro x/y/z.
+static void parseImu(const uint8_t* p, int len) {
+    int ind = 3;                                      // skip cmd + mask(2)
+    if (ind + 9 * 4 > len) return;
+    ind += 8;                                         // roll + pitch (have from Refloat)
+    gV.yaw    = rdF32be(p, ind); ind += 4;
+    gV.acc_x  = rdF32be(p, ind); ind += 4;
+    gV.acc_y  = rdF32be(p, ind); ind += 4;
+    gV.acc_z  = rdF32be(p, ind); ind += 4;
+    gV.gyro_x = rdF32be(p, ind); ind += 4;
+    gV.gyro_y = rdF32be(p, ind); ind += 4;
+    gV.gyro_z = rdF32be(p, ind); ind += 4;
+    gV.imu = true;
 }
 
 #define PROFILE_PATH "/device_profile.json"
@@ -990,6 +1045,7 @@ static void csvWriteHeader() {
     f.print("temp_fet_C,temp_mot_C,temp_bat_C,pitch_deg,roll_deg,setpoint_deg,atr_deg,torquetilt_deg,turntilt_deg,");
     f.print("adc1,adc2,booster_A,foc_id_A,state,amp_hours,tacho,");
     f.print("id_A,iq_A,watt_hours,wh_charged,ah_charged,tacho_abs,fault,");
+    f.print("batt_pct,odo_km,batt_wh,yaw,acc_x,acc_y,acc_z,gyro_x,gyro_y,gyro_z,");
     f.print("bms_v_tot,bms_i_in,cell_min,cell_max,cell_delta_mV");
     for (int i = 1; i <= 20; i++) f.printf(",cell_%02d", i);
     for (int i = 1; i <= 6;  i++) f.printf(",bms_temp_%02d", i);
@@ -1020,6 +1076,9 @@ static void csvAppend() {
              gV.adc1, gV.adc2, gV.booster, gV.foc_id, gV.state, gV.amp_hours, (long)gV.tacho);
     f.printf("%.2f,%.2f,%.4f,%.4f,%.4f,%ld,%d,",
              gV.id, gV.iq, gV.watt_hours, gV.wh_charged, gV.ah_charged, (long)gV.tacho_abs, gV.fault);
+    f.printf("%.1f,%.2f,%.0f,%.1f,%.3f,%.3f,%.3f,%.2f,%.2f,%.2f,",
+             gV.batt_pct, gV.odo_km, gV.batt_wh, gV.yaw,
+             gV.acc_x, gV.acc_y, gV.acc_z, gV.gyro_x, gV.gyro_y, gV.gyro_z);
     f.printf("%.2f,%.2f,%.3f,%.3f,%.0f",
              gBms.vTot, gBms.iIn, cmn, cmx, cd);
     for (int i = 0; i < 20; i++) {
@@ -1770,8 +1829,10 @@ static void drawRide() {
     // battery footer
     canvas.fillRect(0, 121, DW, 14, C_FOOT);
     canvas.drawFastHLine(0, 121, DW, C_PANEL);
-    float soc = gV.valid ? constrain((gV.voltage - gProfile.batt_min_v) /
-                (gProfile.batt_max_v - gProfile.batt_min_v), 0.f, 1.f) : 0;
+    float soc;
+    if (gV.setup && gV.batt_pct > 0) soc = constrain(gV.batt_pct / 100.f, 0.f, 1.f);
+    else soc = gV.valid ? constrain((gV.voltage - gProfile.batt_min_v) /
+               (gProfile.batt_max_v - gProfile.batt_min_v), 0.f, 1.f) : 0;
     char bp[8]; snprintf(bp, sizeof(bp), "%d%%", (int)(soc * 100));
     canvas.setTextColor(C_VOLT); canvas.setTextDatum(ML_DATUM); canvas.drawString(bp, 3, 128);
     int bx = 32, bw = 148, by = 125, bh = 6;
@@ -2229,6 +2290,15 @@ void loop() {
         gLastBmsMs = now;
         vescSend(CMD_BMS_GET_VALUES);
     }
+    // Poll setup values @1Hz (battery %, odometer) and raw IMU @5Hz (accel/gyro)
+    if (gBleOk && now - gLastSetupMs >= 1000) {
+        gLastSetupMs = now;
+        vescSend(CMD_GET_VALUES_SETUP);
+    }
+    if (gBleOk && now - gLastImuMs >= 200) {
+        gLastImuMs = now;
+        vescSendImu();
+    }
 
     // Dispatch incoming BLE packet
     if (gRxReady) {
@@ -2258,6 +2328,22 @@ void loop() {
                         Serial.println();
                     }
                     parseBms(pay, plen);
+                    break;
+                case CMD_GET_VALUES_SETUP:
+                    if (gSetupDbgN < 3) { gSetupDbgN++;
+                        Serial.printf("[SETUP] len=%d:", plen);
+                        for (int i = 0; i < plen && i < 60; i++) Serial.printf(" %02X", pay[i]);
+                        Serial.println();
+                    }
+                    parseSetup(pay, plen);
+                    break;
+                case CMD_GET_IMU_DATA:
+                    if (gImuDbgN < 3) { gImuDbgN++;
+                        Serial.printf("[IMU] len=%d:", plen);
+                        for (int i = 0; i < plen && i < 44; i++) Serial.printf(" %02X", pay[i]);
+                        Serial.println();
+                    }
+                    parseImu(pay, plen);
                     break;
             }
         }
