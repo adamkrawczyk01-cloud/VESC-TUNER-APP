@@ -151,6 +151,10 @@ struct VescVals {
     float adc1      = 0, adc2      = 0;   // footpad sensors (~0..1)
     float atr_set   = 0, torque_tilt = 0, turn_tilt = 0;  // tilt contributions (°)
     float booster   = 0, foc_id    = 0;   // booster current (A), id current (A)
+    float id        = 0, iq        = 0;   // FOC d/q axis currents (A)
+    float watt_hours = 0, wh_charged = 0, ah_charged = 0;  // energy counters
+    int32_t tacho_abs = 0;                // absolute tachometer
+    uint8_t fault   = 0;                  // mc_fault_code (0 = none)
     uint8_t state   = 0;                  // Refloat state_compat (low nibble)
     bool  refloat   = false;              // true once GET_ALLDATA replied
     float temp_bat  = 0;                  // hottest BMS sensor (Smart BMS over CAN)
@@ -399,7 +403,14 @@ static void parseValues(const uint8_t* p, int len) {
     gV.rpm        = (float)rdI32(p, 23);
     gV.voltage    = rdI16(p, 27) / 10.f;
     gV.amp_hours  = rdI32(p, 29) / 10000.f;
+    gV.id         = rdI32(p, 13) / 100.f;
+    gV.iq         = rdI32(p, 17) / 100.f;
+    if (len >= 37) gV.ah_charged = rdI32(p, 33) / 10000.f;
+    if (len >= 41) gV.watt_hours = rdI32(p, 37) / 10000.f;
+    if (len >= 45) gV.wh_charged = rdI32(p, 41) / 10000.f;
     gV.tacho      = rdI32(p, 45);
+    if (len >= 53) gV.tacho_abs = rdI32(p, 49);
+    if (len >= 54) gV.fault     = p[53];
     // Speed: rpm / pole_pairs * circumference * 60 / 1000 → km/h
     const float circ_km = (float)M_PI * gProfile.wheel_mm / 1e6f;
     gV.speed_kmh  = fabsf(gV.rpm) / gProfile.motor_poles * circ_km * 60.f;
@@ -919,6 +930,7 @@ static bool bleConnect(const NimBLEAddress& addr) {
         Serial.printf("[BLE] saved last board %s (%s)\n", addr.toString().c_str(), nm);
     }
     gAutoArmed = true;           // arm auto-logging for this fresh connection
+    requestConfig(CMD_GET_MCCONF, 1500);   // config snapshot for this connection
     // ─────────────────────────────────────────────────────────────────────────
 
     return true;
@@ -977,8 +989,10 @@ static void csvWriteHeader() {
     f.print("ts_ms,speed_kmh,rpm,voltage_V,vcell_V,curr_in_A,curr_mot_A,power_W,duty_pct,");
     f.print("temp_fet_C,temp_mot_C,temp_bat_C,pitch_deg,roll_deg,setpoint_deg,atr_deg,torquetilt_deg,turntilt_deg,");
     f.print("adc1,adc2,booster_A,foc_id_A,state,amp_hours,tacho,");
+    f.print("id_A,iq_A,watt_hours,wh_charged,ah_charged,tacho_abs,fault,");
     f.print("bms_v_tot,bms_i_in,cell_min,cell_max,cell_delta_mV");
     for (int i = 1; i <= 20; i++) f.printf(",cell_%02d", i);
+    for (int i = 1; i <= 6;  i++) f.printf(",bms_temp_%02d", i);
     f.println();
     f.close();
 }
@@ -1004,10 +1018,15 @@ static void csvAppend() {
              gV.pitch, gV.roll, gV.setpoint, gV.atr_set, gV.torque_tilt, gV.turn_tilt);
     f.printf("%.3f,%.3f,%.1f,%.1f,%d,%.4f,%ld,",
              gV.adc1, gV.adc2, gV.booster, gV.foc_id, gV.state, gV.amp_hours, (long)gV.tacho);
+    f.printf("%.2f,%.2f,%.4f,%.4f,%.4f,%ld,%d,",
+             gV.id, gV.iq, gV.watt_hours, gV.wh_charged, gV.ah_charged, (long)gV.tacho_abs, gV.fault);
     f.printf("%.2f,%.2f,%.3f,%.3f,%.0f",
              gBms.vTot, gBms.iIn, cmn, cmx, cd);
     for (int i = 0; i < 20; i++) {
         if (i < gBms.cellNum) f.printf(",%.3f", gBms.cell[i]); else f.print(",");
+    }
+    for (int i = 0; i < 6; i++) {
+        if (i < gBms.tempNum) f.printf(",%.1f", gBms.temp[i]); else f.print(",");
     }
     f.println();
     f.close();
@@ -1021,8 +1040,13 @@ static void startSession() {
     gStat.min_volt = 100.f; gStat.start_ah = -1.f;
     gTripMs = millis();
     csvWriteHeader();
+    // mcconf snapshot for this session (raw bytes captured at connect)
+    if (gMcconfRawLen > 0) {
+        char mp[64]; snprintf(mp, sizeof(mp), "/sessions/%s_mcconf.bin", gSessName);
+        File mf = SD.open(mp, FILE_WRITE);
+        if (mf) { mf.write(gMcconfRaw, gMcconfRawLen); mf.close(); }
+    }
     gRec = true;
-    vescSend(CMD_GET_MCCONF);   // refresh config snapshot for the session
     Serial.printf("[LOG] start %s\n", gSessName);
 }
 static void stopSession() {
@@ -1826,14 +1850,37 @@ static void drawTrip() {
 }
 
 // ── SCREEN 2 · FAULT ─────────────────────────────────────────────────────────
+static const char* faultName(uint8_t f) {
+    switch (f) {
+        case 0:  return "NONE";            case 1:  return "OVER VOLTAGE";
+        case 2:  return "UNDER VOLTAGE";   case 3:  return "DRV";
+        case 4:  return "ABS OVERCURRENT"; case 5:  return "OVER TEMP FET";
+        case 6:  return "OVER TEMP MOTOR"; case 7:  return "GATE DRV OV";
+        case 8:  return "GATE DRV UV";     case 9:  return "MCU UNDER VOLT";
+        case 10: return "WATCHDOG RESET";  case 11: return "ENCODER SPI";
+        case 12: return "ENCODER MIN";     case 13: return "ENCODER MAX";
+        case 14: return "FLASH CORRUPT";   default: return "FAULT";
+    }
+}
+
 static void drawFault() {
-    canvas.fillScreen(0x1000);
-    uiStatBar("FAULT MONITOR", "FAULT", C_RED, "");
+    bool f = (gV.fault != 0);
+    canvas.fillScreen(f ? 0x2000 : C_BG);
+    uiStatBar("FAULT MONITOR", f ? "FAULT" : "OK", f ? C_RED : C_OK, "");
     canvas.setTextDatum(MC_DATUM);
-    // No fault tracking from GET_VALUES yet → show nominal
-    canvas.setTextColor(C_OK); canvas.setTextSize(2); canvas.drawString("NO FAULT", DW / 2, 58);
-    canvas.setTextSize(1); canvas.setTextColor(C_GREY); canvas.drawString("system nominal", DW / 2, 82);
-    canvas.setTextColor(C_DGREY); canvas.drawString("fault decode: TODO", DW / 2, 98);
+    if (f) {
+        canvas.setTextColor(C_RED); canvas.setTextSize(3); canvas.drawString("!", DW / 2, 40);
+        canvas.setTextSize(2); canvas.setTextColor(C_WHITE); canvas.drawString(faultName(gV.fault), DW / 2, 72);
+        char c[20]; snprintf(c, sizeof(c), "MC FAULT  CODE %d", gV.fault);
+        canvas.setTextSize(1); canvas.setTextColor(C_RED); canvas.drawString(c, DW / 2, 92);
+        canvas.setTextColor(C_DGREY); canvas.drawString("recorded to session log", DW / 2, 108);
+    } else {
+        canvas.setTextColor(C_OK); canvas.setTextSize(2); canvas.drawString("NO FAULT", DW / 2, 55);
+        canvas.setTextSize(1); canvas.setTextColor(C_GREY); canvas.drawString("system nominal", DW / 2, 80);
+        if (gV.refloat && gV.state >= 6 && gV.state <= 13) {
+            canvas.setTextColor(C_WARN); canvas.drawString(refloatStateName(gV.state), DW / 2, 98);
+        }
+    }
     canvas.setTextDatum(TL_DATUM); canvas.setTextSize(1);
 }
 
