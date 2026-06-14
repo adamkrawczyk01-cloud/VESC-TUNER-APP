@@ -148,6 +148,9 @@ struct VescVals {
     float voltage   = 0, amp_hours = 0;
     float speed_kmh = 0, pitch     = 0;
     float roll      = 0, setpoint  = 0;   // Refloat GET_ALLDATA (float boards)
+    float adc1      = 0, adc2      = 0;   // footpad sensors (~0..1)
+    float atr_set   = 0, torque_tilt = 0, turn_tilt = 0;  // tilt contributions (°)
+    float booster   = 0, foc_id    = 0;   // booster current (A), id current (A)
     uint8_t state   = 0;                  // Refloat state_compat (low nibble)
     bool  refloat   = false;              // true once GET_ALLDATA replied
     float temp_bat  = 0;                  // hottest BMS sensor (Smart BMS over CAN)
@@ -236,7 +239,7 @@ static bool     gBleOk   = false;
 static bool     gRec     = false;
 static bool     gSdOk    = false;
 static int      gScreen  = 0;           // 0 HUD 1 TRIP 2 FAULT 3 BACKUP 4 RESTORE 5 BOARD 6 CONFIG 7 REVIEW 8 APPLY
-#define SC_COUNT 9
+#define SC_COUNT 10
 static int      gBackupSel = 0;         // selected restore point on RESTORE screen
 static uint8_t  gMcconfRaw[512];   static int gMcconfRawLen   = 0;  // raw config snapshots
 static uint8_t  gAppconfRaw[512];  static int gAppconfRawLen  = 0;
@@ -427,11 +430,18 @@ static void parseAllData(const uint8_t* p, int len) {
     if (len < 4 || p[1] != REFLOAT_MAGIC || p[2] != REFLOAT_GET_ALLDATA) return;
     if (p[3] == 69) { gV.refloat = true; return; }   // fault marker → fields zeroed
     if (len < 34) return;
-    gV.roll     = rdI16(p, 8)  / 10.f;
-    gV.state    = p[10] & 0x0F;
-    gV.setpoint = ((int)p[14] - 128) / 5.f;
-    gV.pitch    = rdI16(p, 20) / 10.f;
-    gV.refloat  = true;
+    gV.roll        = rdI16(p, 8)  / 10.f;
+    gV.state       = p[10] & 0x0F;
+    gV.adc1        = p[12] / 50.f;
+    gV.adc2        = p[13] / 50.f;
+    gV.setpoint    = ((int)p[14] - 128) / 5.f;
+    gV.atr_set     = ((int)p[15] - 128) / 5.f;
+    gV.torque_tilt = ((int)p[17] - 128) / 5.f;
+    gV.turn_tilt   = ((int)p[18] - 128) / 5.f;
+    gV.pitch       = rdI16(p, 20) / 10.f;
+    gV.booster     = (int)p[22] - 128;
+    if (len > 34) { int f = p[34]; gV.foc_id = (f == 222) ? 0 : f / 3.f; }
+    gV.refloat     = true;
 }
 
 // Parse COMM_BMS_GET_VALUES (96) — Smart BMS aggregated by the VESC over CAN.
@@ -1415,17 +1425,18 @@ static void handleKeys() {
             continue;  // eat all other keys in scan menu
         }
 
-        // [1]-[9] — jump straight to a screen (matches prototype deck)
+        // [1]-[9],[0] — jump straight to a screen (1->RIDE ... 9->REVIEW, 0->APPLY)
         if (c >= '1' && c <= '9') {
             gScreen = c - '1';
-            if (gScreen == 7) { loadSuggestions(); gSuggIdx = 0; }
+            if (gScreen == 8) { loadSuggestions(); gSuggIdx = 0; }
             continue;
         }
+        if (c == '0') { gScreen = 9; continue; }
 
         // [M] — cycle screens
         if (c == 'm') {
             gScreen = (gScreen + 1) % SC_COUNT;
-            if (gScreen == 7) { loadSuggestions(); gSuggIdx = 0; }
+            if (gScreen == 8) { loadSuggestions(); gSuggIdx = 0; }
             continue;
         }
 
@@ -1450,19 +1461,19 @@ static void handleKeys() {
             if (c == 's' && gRec) gRec = false;
         }
 
-        // BACKUP (3) — create restore point (read config → SD)
-        if (gScreen == 3) {
+        // CELLS (4) — [B] creates a restore point (read config → SD)
+        if (gScreen == 4) {
             if (c == 'b') doBackup();
         }
 
-        // RESTORE (4) — move selection cursor
-        if (gScreen == 4) {
+        // RESTORE (5) — move selection cursor
+        if (gScreen == 5) {
             if (c == ';' || c == '.') gBackupSel++;          // ; up-arrow, . next
             if (c == '/' && gBackupSel > 0) gBackupSel--;    // / down-arrow
         }
 
-        // REVIEW (7) — accept/skip suggestions (READ-ONLY: navigate only, no write)
-        if (gScreen == 7 && gSuggN > 0) {
+        // REVIEW (8) — accept/skip suggestions (READ-ONLY: navigate only, no write)
+        if (gScreen == 8 && gSuggN > 0) {
             if (c == 'y') { gSugg[gSuggIdx].accepted=true;  gSuggIdx=(gSuggIdx+1)%gSuggN; }
             if (c == 'n') { gSugg[gSuggIdx].accepted=false; gSuggIdx=(gSuggIdx+1)%gSuggN; }
             if (c == '.') { gSuggIdx = (gSuggIdx+1) % gSuggN; }
@@ -1619,15 +1630,30 @@ static void doBackup() {
              n, gMcconfRawLen, gAppconfRawLen, gCustomCfgRawLen);
 }
 
-// ── SCREEN 0 · HUD ───────────────────────────────────────────────────────────
-static void drawHUD() {
+// ── SCREEN 0 · RIDE — glance: speed · duty · pitch · 3 temps · footpads ──────
+static void drawRide() {
     canvas.fillScreen(C_BG);
-    char l[40], r[12];
-    if (gCanId >= 0) snprintf(l, sizeof(l), "%s  CAN %d", gFwVer.received ? "LINK" : "BLE", gCanId);
-    else             snprintf(l, sizeof(l), "%s  DIRECT", gBleOk ? "LINK" : "OFF");
+
+    // status bar with footpad F1/F2 dots
+    canvas.fillRect(0, 0, DW, 12, C_SB);
+    canvas.drawFastHLine(0, 12, DW, C_PANEL);
+    canvas.setTextSize(1); canvas.setTextDatum(TL_DATUM);
+    canvas.fillCircle(5, 6, 2, gBleOk ? C_OK : C_DGREY);
+    char lb[20];
+    if (gCanId >= 0) snprintf(lb, sizeof(lb), "ADV CAN%d", gCanId);
+    else             snprintf(lb, sizeof(lb), gBleOk ? "DIRECT" : "OFFLINE");
+    canvas.setTextColor(C_GREY); canvas.drawString(lb, 11, 2);
+    int fx = 11 + (int)strlen(lb) * 6 + 8;
+    canvas.setTextColor(C_DGREY); canvas.drawString("F1", fx, 2);
+    canvas.fillCircle(fx + 15, 6, 2, gV.adc1 > 0.25f ? C_OK : C_DGREY);
+    canvas.setTextColor(C_DGREY); canvas.drawString("F2", fx + 22, 2);
+    canvas.fillCircle(fx + 37, 6, 2, gV.adc2 > 0.25f ? C_OK : C_DGREY);
     uint32_t ts = gRec ? (millis() - gTripMs) / 1000 : 0;
-    snprintf(r, sizeof(r), "%02u:%02u", (unsigned)(ts / 60), (unsigned)(ts % 60));
-    uiStatBar(l, gRec ? "REC" : "RIDE", gRec ? C_RED : C_VOLT, r);
+    char rc[8]; snprintf(rc, sizeof(rc), "%02u:%02u", (unsigned)(ts/60), (unsigned)(ts%60));
+    canvas.setTextDatum(TR_DATUM); canvas.setTextColor(C_GREY); canvas.drawString(rc, DW - 3, 2);
+    if (gRec) canvas.fillCircle(DW - 36, 6, 2, C_RED);
+    canvas.fillRoundRect(DW - 68, 1, 28, 10, 2, gRec ? C_RED : C_VOLT);
+    canvas.setTextDatum(TL_DATUM); canvas.setTextColor(C_BG); canvas.drawString(gRec ? "REC" : "RIDE", DW - 65, 2);
 
     float spd = gV.valid ? gV.speed_kmh : 0, duty = gV.valid ? gV.duty_pct : 0;
     char v[12];
@@ -1636,55 +1662,45 @@ static void drawHUD() {
     snprintf(v, sizeof(v), "%d", (int)duty);
     uiMegaBar(37, 20, "DUTY", duty / 100.f, dutyColor(duty), v, "%");
 
-    // state pill (left) — real Refloat state when available, else derived
-    const char* st; uint16_t stc;
-    if (gV.refloat)       { st = refloatStateName(gV.state); stc = refloatStateColor(gV.state); }
-    else if (!gV.valid)   { st = "NO DATA";  stc = C_DGREY; }
-    else                  { st = duty > 88 ? "TILTBACK" : spd > 2 ? "RUNNING" : "READY";
-                            stc = duty > 88 ? C_RED : spd > 2 ? C_OK : C_GREY; }
-    int pw = (int)strlen(st) * 6 + 6;
-    canvas.fillRoundRect(6, 62, pw, 10, 2, stc);
-    canvas.setTextColor(C_BG); canvas.setTextDatum(TL_DATUM); canvas.drawString(st, 9, 63);
-
-    // pitch / setpoint bar (left) — lime = setpoint (target), ice = live pitch
-    char plab[24]; snprintf(plab, sizeof(plab), "PITCH %+.0f  ROLL %+.0f", gV.pitch, gV.roll);
-    canvas.setTextColor(C_GREY); canvas.drawString(plab, 6, 76);
-    int pbx = 6, pby = 85, pbw = 104, pbh = 7;
-    canvas.drawRect(pbx, pby, pbw, pbh, C_DGREY);
-    canvas.drawFastVLine(pbx + pbw / 2, pby, pbh, C_DGREY);
-    float sp = constrain(gV.setpoint, -15.f, 15.f);
-    int spx = pbx + pbw / 2 + (int)(sp / 15.f * (pbw / 2 - 2));
-    canvas.fillRect(spx, pby, 2, pbh, C_VOLT);
-    float pit = constrain(gV.pitch, -15.f, 15.f);
-    int pix = pbx + pbw / 2 + (int)(pit / 15.f * (pbw / 2 - 2));
-    canvas.fillRect(pix, pby, 2, pbh, C_ICE);
-
-    // temps (left)
-    auto tbar = [&](int y, const char* lab, float t) {
-        canvas.setTextColor(C_GREY); canvas.setTextDatum(TL_DATUM); canvas.drawString(lab, 6, y);
-        int bx = 26, bw = 64, bh = 5;
-        canvas.drawRect(bx, y, bw, bh, C_DGREY);
-        float f = constrain((t - 25) / 70.f, 0.f, 1.f);
-        if (f > 0) canvas.fillRect(bx + 1, y + 1, (int)((bw - 2) * f), bh - 2, tempColor(t));
-        char b[8]; snprintf(b, sizeof(b), "%d", (int)t);
-        canvas.setTextColor(C_WHITE); canvas.drawString(b, bx + bw + 4, y - 1);
-    };
-    tbar(96, "FET", gV.temp_fet);
-    tbar(107, "MOT", gV.temp_mot);
-
-    // electrical strip (right)
-    float vcell = gProfile.batt_cells ? gV.voltage / gProfile.batt_cells : 0;
-    float kw = fabsf(gV.voltage * gV.curr_in) / 1000.f;
-    auto cell = [&](int y, const char* lab, const char* val) {
-        canvas.setTextColor(C_GREY); canvas.setTextDatum(TL_DATUM); canvas.drawString(lab, 150, y);
-        canvas.setTextColor(C_WHITE); canvas.setTextDatum(TR_DATUM); canvas.drawString(val, DW - 4, y);
-        canvas.drawFastHLine(150, y + 10, DW - 154, C_PANEL);
+    // PITCH bar (3rd) — needles: lime = setpoint, ice = live pitch
+    {
+        int x = 5, y = 60, w = DW - 10, h = 20;
+        canvas.drawRoundRect(x, y, w, h, 2, C_DGREY);
+        int midx = x + w / 2;
+        canvas.drawFastVLine(midx, y + 3, h - 6, C_VOLTD);
+        float sp  = constrain(gV.setpoint, -15.f, 15.f);
+        float pit = constrain(gV.pitch, -15.f, 15.f);
+        int spx = midx + (int)(sp  / 15.f * (w / 2 - 5));
+        int pix = midx + (int)(pit / 15.f * (w / 2 - 5));
+        int lo = min(spx, pix), hi = max(spx, pix);
+        if (hi > lo) canvas.fillRect(lo, y + 5, hi - lo, h - 10, C_PANEL);
+        canvas.fillRect(spx - 1, y + 2, 2, h - 4, C_VOLT);
+        canvas.fillRect(pix - 1, y + 2, 2, h - 4, C_ICE);
+        canvas.setTextSize(1); canvas.setTextDatum(ML_DATUM); canvas.setTextColor(C_WHITE);
+        canvas.drawString("PITCH", x + 4, y + h / 2);
+        char pv[10]; snprintf(pv, sizeof(pv), "%+.0f", gV.pitch);
+        canvas.setTextDatum(MR_DATUM); canvas.setTextColor(C_ICE);
+        canvas.drawString(pv, x + w - 32, y + h / 2);
+        char sv[12]; snprintf(sv, sizeof(sv), "SP%+.0f", gV.setpoint);
+        canvas.setTextColor(C_VOLT); canvas.drawString(sv, x + w - 4, y + h / 2);
         canvas.setTextDatum(TL_DATUM);
+    }
+
+    // 3 temperature tiles: CTRL · MOTOR · BAT
+    auto temptile = [&](int x, int w, const char* lab, float t, bool has) {
+        canvas.fillRoundRect(x, 82, w, 26, 3, C_FOOT);
+        canvas.drawRoundRect(x, 82, w, 26, 3, C_DGREY);
+        canvas.setTextSize(1); canvas.setTextDatum(TC_DATUM); canvas.setTextColor(C_GREY);
+        canvas.drawString(lab, x + w / 2, 85);
+        char b[8]; if (has) snprintf(b, sizeof(b), "%d", (int)t); else snprintf(b, sizeof(b), "--");
+        canvas.setTextSize(2); canvas.setTextColor(has ? tempColor(t) : C_DGREY);
+        canvas.drawString(b, x + w / 2, 94);
+        canvas.setTextSize(1); canvas.setTextDatum(TL_DATUM);
     };
-    char b[16];
-    snprintf(b, sizeof(b), "%.2f", vcell);     cell(62, "V/CELL", b);
-    snprintf(b, sizeof(b), "%.0fA", gV.curr_in); cell(80, "A IN", b);
-    snprintf(b, sizeof(b), "%.1fkW", kw);      cell(98, "POWER", b);
+    int tw = (DW - 10 - 10) / 3;
+    temptile(5,                 tw, "CTRL",  gV.temp_fet, gV.valid);
+    temptile(5 + tw + 5,        tw, "MOTOR", gV.temp_mot, gV.valid);
+    temptile(5 + 2 * (tw + 5),  tw, "BAT",   gV.temp_bat, gV.bms);
 
     // battery footer
     canvas.fillRect(0, 121, DW, 14, C_FOOT);
@@ -1700,6 +1716,48 @@ static void drawHUD() {
     char tr[24]; snprintf(tr, sizeof(tr), "%.1fkm", gStat.total_km);
     canvas.setTextColor(C_GREY); canvas.setTextDatum(MR_DATUM); canvas.drawString(tr, DW - 3, 128);
     canvas.setTextDatum(TL_DATUM);
+}
+
+// ── SCREEN 1 · DETAIL — full data grid (review on Mac later) ─────────────────
+static void drawDetail() {
+    canvas.fillScreen(C_BG);
+    uiStatBar("DETAIL", "ALL", C_ICE, "");
+    float vcell = gProfile.batt_cells ? gV.voltage / gProfile.batt_cells : 0;
+    float kw = fabsf(gV.voltage * gV.curr_in) / 1000.f;
+    struct { const char* k; char v[12]; uint16_t c; } rows[16];
+    int n = 0;
+    auto add = [&](const char* k, const char* fmt, float val, uint16_t c) {
+        rows[n].k = k; snprintf(rows[n].v, 12, fmt, val); rows[n].c = c; n++;
+    };
+    add("V/CELL", "%.2f",  vcell,          C_VOLT);
+    add("PACK",   "%.1f",  gV.voltage,     C_WHITE);
+    add("A IN",   "%.0f",  gV.curr_in,     C_WHITE);
+    add("A MOT",  "%.0f",  gV.curr_mot,    C_WHITE);
+    add("POWER",  "%.1f",  kw,             C_WHITE);
+    add("PITCH",  "%+.1f", gV.pitch,       C_ICE);
+    add("ROLL",   "%+.1f", gV.roll,        C_WHITE);
+    add("SETPT",  "%+.1f", gV.setpoint,    C_VOLT);
+    add("ATR",    "%+.1f", gV.atr_set,     C_WHITE);
+    add("TQTILT", "%+.1f", gV.torque_tilt, C_WHITE);
+    add("TURN",   "%+.1f", gV.turn_tilt,   C_WHITE);
+    add("ADC1",   "%.2f",  gV.adc1,        C_WHITE);
+    add("ADC2",   "%.2f",  gV.adc2,        C_WHITE);
+    add("BOOST",  "%.0f",  gV.booster,     C_WHITE);
+    add("FOC ID", "%.1f",  gV.foc_id,      C_WHITE);
+    rows[n].k = "STATE"; rows[n].c = C_VOLT;
+    snprintf(rows[n].v, 12, "%s", gV.refloat ? refloatStateName(gV.state) : (gV.valid ? "RUN" : "--")); n++;
+
+    int top = 16, dy = 14, colW = DW / 2, half = (n + 1) / 2;
+    for (int i = 0; i < n; i++) {
+        int col = i / half, r = i % half;
+        int x = col * colW + 5, y = top + r * dy;
+        canvas.setTextSize(1); canvas.setTextDatum(TL_DATUM);
+        canvas.setTextColor(C_GREY); canvas.drawString(rows[i].k, x, y);
+        canvas.setTextColor(rows[i].c); canvas.setTextDatum(TR_DATUM);
+        canvas.drawString(rows[i].v, col * colW + colW - 6, y);
+        canvas.drawFastHLine(x, y + 10, colW - 11, C_PANEL);
+        canvas.setTextDatum(TL_DATUM);
+    }
 }
 
 // ── SCREEN 1 · TRIP ──────────────────────────────────────────────────────────
@@ -1945,15 +2003,16 @@ static void drawRestore() {
 
 static void renderScreen() {
     switch (gScreen) {
-        case 0: drawHUD();     break;
-        case 1: drawTrip();    break;
-        case 2: drawFault();   break;
-        case 3: drawCells();   break;
-        case 4: drawRestore(); break;
-        case 5: drawBoard();   break;
-        case 6: drawConfig();  break;
-        case 7: drawReview();  break;
-        case 8: drawApply();   break;
+        case 0: drawRide();    break;
+        case 1: drawDetail();  break;
+        case 2: drawTrip();    break;
+        case 3: drawFault();   break;
+        case 4: drawCells();   break;
+        case 5: drawRestore(); break;
+        case 6: drawBoard();   break;
+        case 7: drawConfig();  break;
+        case 8: drawReview();  break;
+        case 9: drawApply();   break;
     }
 }
 
