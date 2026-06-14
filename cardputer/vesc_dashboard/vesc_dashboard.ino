@@ -1461,13 +1461,9 @@ static void handleKeys() {
             if (c == 's' && gRec) gRec = false;
         }
 
-        // CELLS (4) — [B] creates a restore point (read config → SD)
-        if (gScreen == 4) {
-            if (c == 'b') doBackup();
-        }
-
-        // RESTORE (5) — move selection cursor
+        // BACKUP/RESTORE (5) — [B] create backup, cursor to pick a restore point
         if (gScreen == 5) {
+            if (c == 'b') doBackup();
             if (c == ';' || c == '.') gBackupSel++;          // ; up-arrow, . next
             if (c == '/' && gBackupSel > 0) gBackupSel--;    // / down-arrow
         }
@@ -1990,15 +1986,26 @@ static void drawBackup() {
     uiBackupList(61, -1);
 }
 
+// Combined BACKUP / RESTORE management screen.
 static void drawRestore() {
     canvas.fillScreen(C_BG);
-    uiStatBar("RESTORE", "WRITES VESC", C_WARN, "");
-    uiTitle("RESTORE BACKUP", "SET", C_VOLT);
-    int n = uiBackupList(30, gBackupSel);
+    uiStatBar("BACKUP / RESTORE", gBleOk ? "READY" : "--", gBleOk ? C_OK : C_DGREY, "");
+    uiTitle("BACKUP / RESTORE", "GET 14/16/93", C_ICE);
+    // create-backup action
+    canvas.drawRoundRect(5, 28, DW - 10, 14, 3, C_VOLTD);
+    canvas.setTextSize(1); canvas.setTextDatum(ML_DATUM); canvas.setTextColor(C_VOLT);
+    canvas.drawString("> CREATE BACKUP    press [B]", 10, 35);
+    canvas.setTextDatum(TL_DATUM);
+    if (gBackupMsg[0]) {
+        canvas.setTextColor(strncmp(gBackupMsg, "ERR", 3) == 0 ? C_RED : C_OK);
+        canvas.drawString(gBackupMsg, 6, 46);
+    } else {
+        canvas.setTextColor(C_GREY); canvas.drawString("RESTORE POINTS ON SD:", 6, 46);
+    }
+    int n = uiBackupList(57, gBackupSel);
     if (n > 0 && gBackupSel >= n) gBackupSel = n - 1;
-    canvas.setTextSize(1); canvas.setTextDatum(TL_DATUM);
-    canvas.setTextColor(C_OK);   canvas.drawString("SAFETY GATE: BOARD IDLE OK", 6, 104);
-    canvas.setTextColor(C_WARN); canvas.drawString("WRITE DISABLED - read-only build", 6, 124);
+    canvas.setTextColor(C_WARN); canvas.setTextDatum(TL_DATUM);
+    canvas.drawString("restore write: disabled (read-only)", 6, 124);
 }
 
 static void renderScreen() {
