@@ -504,9 +504,18 @@ static void parseBms(const uint8_t* p, int len) {
         int tn = p[ind++];
         if (tn < 0 || tn > 16) tn = 0;
         gBms.tempNum = tn;
-        float maxT = -100.f;
+        float maxT = -1000.f;
         for (int i = 0; i < tn; i++) { float t = f16(1e2f); gBms.temp[i] = t; if (t > maxT) maxT = t; }
-        if (tn > 0) { gV.temp_bat = maxT; gV.bms = true; }
+        // Trailing fields: temp_ic, temp_hum, humidity, temp_max_cell (all f16/100).
+        // Many packs report 0 ADC sensors and carry the temperature in temp_ic /
+        // temp_max_cell instead. Read them and keep the hottest plausible value.
+        float ic = f16(1e2f);                          // temp_ic
+        if (ic > 0.f && ic < 120.f && ic > maxT) maxT = ic;
+        f16(1e2f);                                     // temp_hum (skip)
+        f16(1e2f);                                     // humidity (skip — not a temp)
+        float mc = f16(1e2f);                          // temp_max_cell
+        if (mc > 0.f && mc < 120.f && mc > maxT) maxT = mc;
+        if (maxT > -100.f) gV.temp_bat = maxT;
     }
     gBms.valid = (cn > 0);
     if (cn > 0) gV.bms = true;
@@ -2342,13 +2351,14 @@ void loop() {
                     break;
                 case CMD_BMS_GET_VALUES:
                     gBmsReplies++;
-                    if (gBmsDbgN < 5) {       // dump raw a few times to verify byte layout
+                    parseBms(pay, plen);
+                    if (gBmsDbgN < 5) {       // dump FULL packet to verify temp section
                         gBmsDbgN++;
-                        Serial.printf("[BMS] len=%d:", plen);
-                        for (int i = 0; i < plen && i < 56; i++) Serial.printf(" %02X", pay[i]);
+                        Serial.printf("[BMS] len=%d cells=%d temps=%d tbat=%.1f:",
+                                      plen, gBms.cellNum, gBms.tempNum, gV.temp_bat);
+                        for (int i = 0; i < plen && i < 128; i++) Serial.printf(" %02X", pay[i]);
                         Serial.println();
                     }
-                    parseBms(pay, plen);
                     break;
                 case CMD_GET_VALUES_SETUP:
                     if (gSetupDbgN < 3) { gSetupDbgN++;
