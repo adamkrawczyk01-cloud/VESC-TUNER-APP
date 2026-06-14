@@ -1,0 +1,22 @@
+# Local toolchain (37MB arduino-cli binary)
+bin/
+
+# Third-party reference app — separate project (KacperKozak/vesc-app-poc), not ours to publish
+vesc-app-poc-dev/
+
+# Local Claude Code settings (machine-specific)
+.claude/
+
+# macOS / editor cruft
+.DS_Store
+**/.DS_Store
+
+# Build artifacts
+*.bin
+*.elf
+*.hex
+*.map
+build/
+
+# Scratch
+analysis/

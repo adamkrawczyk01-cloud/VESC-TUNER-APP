@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>VESC AI Tuner · Cardputer UI</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Doto:wght@400;500;600;700;800;900&family=Silkscreen:wght@400;700&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   VESC AI TUNER — Cardputer UI prototype
+   Authored at NATIVE 240x135. The .screen box is exactly the
+   device resolution; everything inside uses device pixels.
+   Scaled x4 for viewing. Port layout 1:1 to M5GFX.
+   ============================================================ */
+:root{
+  --bg:#0a0c0a;
+  --bg2:#10130f;
+  --panel:#151a13;
+  --ink:#e9f0e2;
+  --dim:#5e6e57;
+  --dimmer:#39432f;
+  --volt:#c7f72b;     /* signature lime — speed / primary */
+  --volt-d:#88aa12;
+  --warn:#ffb22e;
+  --danger:#ff3b4e;
+  --ok:#3ad6a0;
+  --ice:#5fd0ff;
+  --grid:rgba(199,247,43,.06);
+  --scale:4;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:
+    radial-gradient(1200px 700px at 72% -10%, rgba(199,247,43,.10), transparent 60%),
+    radial-gradient(900px 600px at 10% 110%, rgba(95,208,255,.05), transparent 55%),
+    var(--bg);
+  color:var(--ink);
+  font-family:'Silkscreen',monospace;
+  min-height:100%;
+  overflow-x:hidden;
+  -webkit-font-smoothing:none;
+}
+/* grain + grid atmosphere */
+body::before{
+  content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+  background-image:linear-gradient(var(--grid) 1px,transparent 1px),
+                   linear-gradient(90deg,var(--grid) 1px,transparent 1px);
+  background-size:32px 32px;
+  mask:radial-gradient(900px 700px at 60% 30%,#000,transparent 90%);
+}
+body::after{
+  content:"";position:fixed;inset:0;pointer-events:none;z-index:60;opacity:.5;
+  background:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2'/><feColorMatrix type='saturate' values='0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/></svg>");
+  mix-blend-mode:overlay;
+}
+
+.wrap{position:relative;z-index:1;max-width:1180px;margin:0 auto;padding:34px 28px 70px}
+
+/* ---- masthead ---- */
+.masthead{display:flex;justify-content:space-between;align-items:flex-end;
+  border-bottom:1px solid var(--dimmer);padding-bottom:16px;margin-bottom:30px;flex-wrap:wrap;gap:18px}
+.brand{display:flex;flex-direction:column;gap:7px}
+.brand .kicker{font-size:9px;letter-spacing:3px;color:var(--volt)}
+.brand h1{font-family:'Doto',monospace;font-weight:900;font-size:38px;line-height:.86;
+  letter-spacing:1px;color:var(--ink);text-shadow:0 0 22px rgba(199,247,43,.18)}
+.brand h1 b{color:var(--volt)}
+.brand .sub{font-size:8px;color:var(--dim);letter-spacing:1.5px;max-width:360px;line-height:1.7}
+.specsheet{text-align:right;font-size:8px;color:var(--dim);letter-spacing:1px;line-height:2}
+.specsheet b{color:var(--ink)}
+.specsheet .res{font-family:'Doto';font-weight:700;color:var(--volt);font-size:13px;letter-spacing:0}
+
+.stage{display:flex;gap:34px;align-items:flex-start;flex-wrap:wrap}
+
+/* ===================== THE DEVICE ===================== */
+.device-col{display:flex;flex-direction:column;align-items:center;gap:0}
+.device{
+  position:relative;
+  background:linear-gradient(160deg,#23170a,#140d06 60%,#0c0805);
+  border-radius:14px;
+  padding:16px 16px 10px;
+  box-shadow:0 40px 80px -30px #000, inset 0 1px 0 rgba(255,170,60,.12),
+             inset 0 0 0 1px rgba(255,150,40,.14);
+}
+.device::after{ /* M5 orange edge hint */
+  content:"";position:absolute;inset:0;border-radius:14px;pointer-events:none;
+  box-shadow:inset 0 0 0 2px rgba(232,120,20,.10);
+}
+.bezel{
+  background:#000;border-radius:5px;padding:9px;
+  box-shadow:inset 0 0 0 1px #2a2f25, inset 0 6px 18px #000;
+}
+/* screen authored at NATIVE 240x135 */
+.screen-scaler{width:calc(240px * var(--scale));height:calc(135px * var(--scale));overflow:hidden;border-radius:2px;
+  box-shadow:0 0 40px rgba(199,247,43,.10);}
+.screen{
+  width:240px;height:135px;transform:scale(var(--scale));transform-origin:top left;
+  position:relative;background:#06070a;overflow:hidden;
+  font-family:'Silkscreen',monospace;color:var(--ink);
+}
+/* LCD glass overlays (inside screen px-space) */
+.screen .glass{position:absolute;inset:0;pointer-events:none;z-index:40;
+  background:linear-gradient(180deg,rgba(255,255,255,.05),transparent 12%);}
+.screen .scan{position:absolute;inset:0;pointer-events:none;z-index:41;opacity:.5;
+  background:repeating-linear-gradient(0deg,rgba(0,0,0,.0) 0px,rgba(0,0,0,.28) 1px,transparent 2px);}
+.screen .vig{position:absolute;inset:0;pointer-events:none;z-index:39;
+  box-shadow:inset 0 0 28px 6px rgba(0,0,0,.7);}
+
+/* keyboard hint */
+.keyboard{margin-top:10px;display:grid;grid-template-columns:repeat(14,1fr);gap:3px;width:calc(240px * var(--scale));}
+.keyboard span{height:13px;border-radius:2px;background:linear-gradient(180deg,#1a1109,#0d0904);
+  box-shadow:inset 0 1px 0 rgba(255,160,50,.10);}
+.devtag{margin-top:9px;font-size:8px;color:var(--dim);letter-spacing:2px}
+.devtag b{color:#e87814}
+
+/* ===================== SCREEN VIEWS ===================== */
+.view{position:absolute;inset:0;z-index:10;display:none;padding:0;animation:vin .22s ease both}
+.view.active{display:block}
+@keyframes vin{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+
+/* shared screen chrome */
+.statbar{position:absolute;top:0;left:0;right:0;height:11px;display:flex;align-items:center;
+  justify-content:space-between;padding:0 4px;font-size:6px;letter-spacing:.5px;
+  background:linear-gradient(180deg,#0e120c,#090b07);border-bottom:1px solid #1c2417;color:var(--dim);z-index:20}
+.statbar .l,.statbar .r{display:flex;align-items:center;gap:5px}
+.dot{width:4px;height:4px;border-radius:50%;display:inline-block;background:var(--dimmer)}
+.dot.on{background:var(--ok);box-shadow:0 0 4px var(--ok)}
+.dot.rec{background:var(--danger);box-shadow:0 0 5px var(--danger);animation:blink 1s steps(1) infinite}
+@keyframes blink{50%{opacity:.25}}
+.mode-pill{color:var(--bg);background:var(--volt);padding:0 3px;border-radius:2px;font-weight:700}
+.read-pill{color:var(--ice);border:1px solid var(--ice);padding:0 3px;border-radius:2px}
+
+.body{position:absolute;top:11px;left:0;right:0;bottom:0;padding:3px 4px}
+.label{font-size:6px;color:var(--dim);letter-spacing:1px}
+.num{font-family:'Doto',monospace;font-weight:800;color:var(--ink);line-height:1}
+.unit{font-size:6px;color:var(--dim);letter-spacing:.5px}
+
+/* ---------- HUD (mode B) ----------
+   TOP: two thick stacked bars (SPEED, DUTY), value at the end.
+   BELOW: state · pitch · temps (left) + electrical (right).        */
+#hud .megabars,#ride .megabars{position:absolute;left:5px;right:5px;top:3px;display:flex;flex-direction:column;gap:5px}
+#ride .mbar{height:20px}
+.mbar{position:relative;height:23px}
+.mtrack{position:absolute;inset:0;background:#0f130c;border:1px solid #20281a;border-radius:3px;overflow:hidden}
+.mfill{position:absolute;left:0;top:0;bottom:0;width:0;transition:width .22s linear,background .25s}
+.mbar.speed .mfill{background:linear-gradient(90deg,var(--volt-d),var(--volt))}
+.mlabel{position:absolute;left:6px;top:50%;transform:translateY(-50%);font-size:6px;letter-spacing:1.5px;
+  color:#d7ecb6;text-shadow:0 1px 2px #000;z-index:3}
+.mval{position:absolute;right:6px;top:50%;transform:translateY(-50%);display:flex;align-items:baseline;gap:2px;z-index:3}
+.mval .num{font-family:'Doto';font-weight:800;font-size:18px;color:#fff;text-shadow:0 1px 3px #000,0 0 8px rgba(0,0,0,.7)}
+.mval .mu{font-size:6px;color:#d7ecb6;text-shadow:0 1px 2px #000;letter-spacing:.5px}
+
+#hud .statepill{position:absolute;left:6px;top:60px;font-size:7px;letter-spacing:1px;
+  color:var(--bg);background:var(--ok);padding:1px 4px;border-radius:2px;font-weight:700}
+#hud .pitch{position:absolute;left:6px;top:73px;width:110px}
+#hud .pitchbar{height:7px;background:#10140d;border:1px solid #1f2817;border-radius:2px;position:relative;overflow:hidden;margin-top:2px}
+#hud .pitchbar i{position:absolute;top:0;bottom:0;width:2px;background:var(--ice);box-shadow:0 0 5px var(--ice);left:50%}
+#hud .pitchbar i.sp{background:var(--volt);opacity:.7}
+#hud .pitchbar .mid{position:absolute;left:50%;top:0;bottom:0;width:1px;background:#2c3620}
+
+/* electrical strip (right) */
+#hud .strip{position:absolute;right:6px;top:60px;width:104px;display:flex;flex-direction:column;gap:3px}
+#hud .strip .cell{display:flex;justify-content:space-between;align-items:baseline;
+  border-bottom:1px solid #161c10;padding-bottom:1px}
+#hud .strip .cell .label{font-size:6px}
+#hud .strip .cell .num{font-size:11px}
+#hud .strip .cell .unit{font-size:5px;color:var(--dim)}
+
+/* temp bars (left, bottom) */
+#hud .temps{position:absolute;left:6px;top:95px;width:110px;display:flex;flex-direction:column;gap:4px}
+.tbar{display:flex;align-items:center;gap:3px;font-size:6px;color:var(--dim)}
+.tbar .tl{width:15px;letter-spacing:.5px}
+.tbar .track{flex:1;height:5px;background:#10140d;border:1px solid #1f2817;border-radius:2px;overflow:hidden}
+.tbar .fill{height:100%;background:var(--ok);transition:width .3s,background .3s}
+.tbar .v{font-family:'Doto';font-weight:700;color:var(--ink);font-size:8px;width:18px;text-align:right}
+
+/* battery footer */
+.battery{position:absolute;left:0;right:0;bottom:0;height:13px;border-top:1px solid #1c2417;
+  background:#090b07;display:flex;align-items:center;gap:5px;padding:0 5px;z-index:15}
+.battery .track{flex:1;height:6px;background:#10140d;border:1px solid #20281a;border-radius:2px;overflow:hidden;position:relative}
+.battery .fill{height:100%;background:linear-gradient(90deg,var(--volt-d),var(--volt));transition:width .4s}
+.battery .pct{font-family:'Doto';font-weight:700;font-size:9px;color:var(--volt)}
+.battery .trip{font-size:6px;color:var(--dim)}
+.battery .trip b{color:var(--ink);font-family:'Doto';font-weight:700}
+
+/* ---------- RIDE: F1/F2 footpad dots · pitch row · big temps ---------- */
+.fp{display:inline-flex;align-items:center;gap:2px}
+.pad-lab{font-size:6px;color:var(--dim);letter-spacing:.5px}
+.pad-dot{width:5px;height:5px;border-radius:50%;background:var(--dimmer)}
+.pad-dot.on{background:var(--ok);box-shadow:0 0 4px var(--ok)}
+
+/* PITCH/SETPOINT as a full Duty-style bar (3rd mega-bar) with two needles */
+.mbar.pitch .mtrack{background:#0f130c}
+.mbar.pitch .pmid{position:absolute;left:50%;top:3px;bottom:3px;width:1px;background:#3a4a22;z-index:1}
+.mbar.pitch .pgap{position:absolute;top:4px;bottom:4px;background:rgba(95,208,255,.16);z-index:1}
+.mbar.pitch .pmk{position:absolute;top:2px;bottom:2px;width:3px;margin-left:-1px;border-radius:1px;z-index:2}
+.mbar.pitch .pmk.sp{background:var(--volt);box-shadow:0 0 6px var(--volt)}
+.mbar.pitch .pmk.pt{background:var(--ice);box-shadow:0 0 6px var(--ice)}
+.mbar.pitch .mlabel,.mbar.pitch .mval{z-index:4}
+.mbar.pitch .mval .num{font-size:14px;color:var(--ice)}
+.psp-val{font-size:6px;color:var(--volt);margin-left:5px}
+.psp-val b{font-family:'Doto';font-weight:700;font-size:9px}
+
+/* 3 temperature tiles: CTRL · MOTOR · BAT */
+#ride .ridetemps{position:absolute;left:5px;right:5px;top:74px;display:flex;gap:6px}
+.t2.big{flex:1;background:linear-gradient(180deg,#11150e,#0c0f09);border:1px solid #1c2417;border-radius:4px;
+  padding:2px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:0}
+.t2.big span{font-size:6px;color:var(--dim);letter-spacing:1px}
+.t2.big b{font-family:'Doto';font-weight:800;font-size:18px;color:var(--ink);line-height:1.2}
+.t2.big small{font-size:6px;color:var(--dim)}
+
+/* ---------- DETAIL dense grid ---------- */
+#detail .dgrid{position:absolute;left:4px;right:4px;top:14px;bottom:3px;display:grid;
+  grid-template-columns:1fr 1fr;gap:0 10px;align-content:start}
+.dcell{display:flex;justify-content:space-between;align-items:baseline;
+  border-bottom:1px solid #141a0f;padding:1.5px 2px}
+.dcell .dk{font-size:6px;color:var(--dim);letter-spacing:.5px}
+.dcell .dv{font-family:'Doto';font-weight:700;font-size:10px;color:var(--ink)}
+.dcell .dv.hot{color:var(--volt)}
+.dcell .dv.ice{color:var(--ice)}
+
+/* ---------- FAULT (mode B) ---------- */
+#fault{background:radial-gradient(circle at 50% 38%,rgba(255,59,78,.16),#0a0405)}
+#fault.flash{animation:faultflash .5s steps(1) infinite}
+@keyframes faultflash{50%{background:radial-gradient(circle at 50% 38%,rgba(255,59,78,.34),#1a0608)}}
+#fault .fwrap{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;text-align:center}
+#fault .bang{font-size:30px;color:var(--danger);text-shadow:0 0 18px var(--danger);font-family:'Doto';font-weight:900}
+#fault .fname{font-size:14px;color:var(--ink);letter-spacing:1px}
+#fault .fcode{font-size:7px;color:var(--danger);letter-spacing:2px}
+#fault .fsub{font-size:6px;color:var(--dim);letter-spacing:1px;margin-top:4px}
+
+/* ---------- TRIP (mode B) ---------- */
+#trip .ttitle{position:absolute;top:14px;left:5px;font-size:9px;color:var(--volt);letter-spacing:2px}
+#trip .ttitle small{color:var(--dim);font-size:6px;display:block;margin-top:2px;letter-spacing:1px}
+#trip .grid{position:absolute;top:34px;left:4px;right:4px;bottom:5px;display:grid;
+  grid-template-columns:1fr 1fr 1fr;gap:4px}
+.stat{background:linear-gradient(180deg,#11150e,#0c0f09);border:1px solid #1c2417;border-radius:3px;
+  padding:3px 4px;display:flex;flex-direction:column;justify-content:center}
+.stat .label{font-size:5px}
+.stat .num{font-size:14px;margin-top:1px}
+.stat .num small{font-size:6px;color:var(--dim);font-weight:400}
+.stat.hl{border-color:var(--volt-d)}
+.stat.hl .num{color:var(--volt)}
+
+/* ---------- BOARD (mode A) ---------- */
+.atitle{position:absolute;top:14px;left:5px;right:5px;display:flex;justify-content:space-between;align-items:baseline}
+.atitle .t{font-size:9px;color:var(--volt);letter-spacing:2px}
+.atitle .badge{font-size:6px;color:var(--ok);border:1px solid var(--ok);padding:0 3px;border-radius:2px}
+#board .rows{position:absolute;top:32px;left:5px;right:5px;display:flex;flex-direction:column;gap:0}
+.brow{display:flex;justify-content:space-between;align-items:baseline;padding:3px 0;border-bottom:1px solid #161c10;font-size:7px}
+.brow .k{color:var(--dim);letter-spacing:1px}
+.brow .v{font-family:'Doto';font-weight:700;color:var(--ink);font-size:9px}
+.brow .v.hot{color:var(--volt)}
+#board .caps{position:absolute;bottom:5px;left:5px;right:5px;display:flex;gap:3px;flex-wrap:wrap}
+.cap{font-size:5px;letter-spacing:1px;color:var(--ice);border:1px solid #234;padding:1px 3px;border-radius:2px}
+.cap.off{color:var(--dimmer);border-color:#1a1f15}
+
+/* ---------- CONFIG (mode A) ---------- */
+#config .clist{position:absolute;top:30px;left:4px;right:4px;bottom:14px;overflow:hidden}
+.crow{display:flex;justify-content:space-between;align-items:center;padding:1px 4px 1px 7px;font-size:7px;border-bottom:1px solid #141a0f}
+.crow .ck{color:var(--dim);letter-spacing:.5px}
+.crow .cv{font-family:'Doto';font-weight:700;color:var(--ink);font-size:9px}
+.crow.wl{background:rgba(199,247,43,.05)}
+.crow.wl .ck{color:var(--volt)}
+.crow.wl::before{content:"";width:3px;height:3px;background:var(--volt);border-radius:50%;
+  position:absolute;left:0;box-shadow:0 0 4px var(--volt)}
+#config .clist{position:absolute}
+.crow{position:relative}
+#config .foot{position:absolute;bottom:0;left:0;right:0;height:12px;background:#090b07;border-top:1px solid #1c2417;
+  display:flex;align-items:center;justify-content:space-between;padding:0 5px;font-size:5px;color:var(--dim);letter-spacing:1px}
+#config .foot b{color:var(--volt)}
+
+/* ---------- REVIEW (mode A) ---------- */
+#review .rtitle{position:absolute;top:14px;left:5px;right:5px;display:flex;justify-content:space-between;align-items:center}
+#review .rtitle .t{font-size:9px;color:var(--volt);letter-spacing:1px}
+#review .armed{font-size:6px;color:var(--warn);border:1px solid var(--warn);padding:0 3px;border-radius:2px;letter-spacing:1px}
+#review .difflist{position:absolute;top:30px;left:4px;right:4px;bottom:13px}
+.diff{display:grid;grid-template-columns:9px 1fr auto;gap:4px;align-items:center;
+  padding:3px 3px;border-bottom:1px solid #141a0f;font-size:7px}
+.diff.sel{background:rgba(199,247,43,.07);outline:1px solid var(--volt-d)}
+.diff .cur{font-family:'Silkscreen';font-size:7px;color:var(--dim)}
+.diff .k{color:var(--ink);letter-spacing:.5px}
+.diff .vals{font-family:'Doto';font-weight:700;font-size:8px;display:flex;align-items:center;gap:3px;justify-self:end}
+.diff .from{color:var(--dim)}
+.diff .arr{color:var(--volt)}
+.diff .to{color:var(--volt)}
+.diff .delta{font-size:6px;font-family:'Silkscreen';margin-left:3px}
+.diff .up{color:var(--warn)}.diff .dn{color:var(--ice)}
+.diff .chk{font-family:'Doto';font-weight:900;font-size:9px;text-align:center}
+.diff .chk.y{color:var(--ok)}.diff .chk.n{color:var(--dim)}
+.diff .guard{font-size:5px;color:var(--ok);margin-left:2px}
+.diff .guard.bad{color:var(--danger)}
+#review .rfoot{position:absolute;bottom:0;left:0;right:0;height:12px;background:#090b07;border-top:1px solid #1c2417;
+  display:flex;align-items:center;justify-content:space-between;padding:0 5px;font-size:5px;color:var(--dim);letter-spacing:1px}
+#review .rfoot .ok{color:var(--ok)}
+
+/* ---------- APPLY (mode A) ---------- */
+#apply .aTitle{position:absolute;top:14px;left:5px;font-size:9px;color:var(--volt);letter-spacing:2px}
+#apply .gate{position:absolute;top:28px;left:5px;right:5px;display:flex;gap:4px;font-size:6px}
+#apply .gate .g{flex:1;border:1px solid #1c2417;border-radius:3px;padding:2px 3px;color:var(--dim)}
+#apply .gate .g.pass{color:var(--ok);border-color:var(--ok)}
+#apply .gate .g b{color:inherit;display:block;font-family:'Doto';font-weight:700;font-size:8px}
+#apply .wlist{position:absolute;top:50px;left:5px;right:5px;bottom:14px}
+.wrow{display:flex;align-items:center;gap:5px;padding:3px 0;border-bottom:1px solid #141a0f;font-size:7px}
+.wrow .st{font-family:'Doto';font-weight:900;font-size:9px;width:10px;text-align:center}
+.wrow .st.ok{color:var(--ok)}.wrow .st.run{color:var(--warn)}.wrow .st.wait{color:var(--dimmer)}
+.wrow .k{flex:1;color:var(--ink)}
+.wrow .vv{font-family:'Doto';font-weight:700;color:var(--volt);font-size:8px}
+.wrow .ver{font-size:5px;color:var(--ok);letter-spacing:1px}
+.wrow .ver.run{color:var(--warn)}.wrow .ver.wait{color:var(--dimmer)}
+#apply .progress{position:absolute;bottom:0;left:0;right:0;height:12px;background:#090b07;border-top:1px solid #1c2417;
+  display:flex;align-items:center;padding:0 5px;gap:4px;font-size:5px;color:var(--dim);letter-spacing:1px}
+#apply .progress .track{flex:1;height:4px;background:#10140d;border:1px solid #20281a;border-radius:2px;overflow:hidden}
+#apply .progress .fill{height:100%;width:0;background:var(--volt);transition:width .3s}
+
+/* ---------- BACKUP / RESTORE (mode A) ---------- */
+.apanel{position:absolute;top:30px;left:5px;right:5px;bottom:12px}
+.action{display:flex;align-items:center;gap:5px;
+  background:linear-gradient(90deg,rgba(199,247,43,.16),rgba(199,247,43,.03));
+  border:1px solid var(--volt-d);border-radius:3px;padding:4px 6px;margin-bottom:5px}
+.action .ico{font-family:'Doto';font-weight:900;color:var(--volt);font-size:11px}
+.action .at{font-size:8px;color:var(--volt);letter-spacing:1px;flex:1}
+.action .ah{font-size:5px;color:var(--dim);letter-spacing:.5px}
+.bplist{display:flex;flex-direction:column}
+.bprow{display:flex;align-items:center;gap:5px;padding:3px 4px;border-bottom:1px solid #141a0f;font-size:7px;position:relative}
+.bprow.sel{background:rgba(199,247,43,.08);outline:1px solid var(--volt-d)}
+.bprow .cur{font-family:'Doto';font-weight:900;color:var(--volt);width:6px;font-size:9px}
+.bprow .bn{flex:1;color:var(--ink);letter-spacing:.5px}
+.bprow .bn small{color:var(--dim);display:block;font-size:5px;margin-top:1px;letter-spacing:.5px}
+.bprow .bt{font-size:5px;color:var(--ice);border:1px solid #234;padding:0 2px;border-radius:2px}
+.bprow .bt.stock{color:var(--warn);border-color:var(--warn)}
+.bprow .bt.manual{color:var(--ok);border-color:#2a5}
+
+/* shared gate + footer */
+.gate{display:flex;gap:4px;font-size:6px}
+.gate .g{flex:1;border:1px solid #1c2417;border-radius:3px;padding:2px 3px;color:var(--dim)}
+.gate .g.pass{color:var(--ok);border-color:var(--ok)}
+.gate .g b{color:inherit;display:block;font-family:'Doto';font-weight:700;font-size:7px;margin-top:1px}
+.sfoot{position:absolute;bottom:0;left:0;right:0;height:12px;background:#090b07;border-top:1px solid #1c2417;
+  display:flex;align-items:center;justify-content:space-between;padding:0 5px;font-size:5px;color:var(--dim);letter-spacing:1px}
+.sfoot b{color:var(--volt)}
+.sfoot .warn{color:var(--warn)}
+
+/* ===================== CONTROL DECK ===================== */
+.deck{flex:1;min-width:300px;display:flex;flex-direction:column;gap:22px;padding-top:6px}
+.deck h2{font-family:'Doto';font-weight:800;font-size:13px;letter-spacing:1px;color:var(--ink);
+  display:flex;align-items:center;gap:8px}
+.deck h2::before{content:"";width:14px;height:2px;background:var(--volt);display:inline-block}
+.deck .grp{display:flex;flex-direction:column;gap:9px}
+.grp .gl{font-size:8px;letter-spacing:2px;color:var(--dim)}
+.keys{display:grid;grid-template-columns:repeat(2,1fr);gap:7px}
+.key{
+  position:relative;text-align:left;cursor:pointer;
+  background:linear-gradient(180deg,var(--panel),#0d110b);
+  border:1px solid #20281a;border-radius:5px;padding:9px 10px;color:var(--ink);
+  font-family:'Silkscreen';transition:.16s;overflow:hidden;
+}
+.key:hover{border-color:var(--volt-d);transform:translateY(-1px)}
+.key.active{border-color:var(--volt);box-shadow:0 0 0 1px var(--volt),0 0 24px -6px var(--volt)}
+.key.active::after{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--volt)}
+.key .kk{font-family:'Doto';font-weight:800;font-size:13px;color:var(--volt);float:right}
+.key .kt{font-size:9px;letter-spacing:1px;display:block;margin-bottom:3px}
+.key .kd{font-size:7px;color:var(--dim);letter-spacing:.5px;line-height:1.5}
+.key .mtag{font-size:6px;letter-spacing:1px}
+.key.mA .mtag{color:var(--ice)} .key.mB .mtag{color:var(--volt)}
+
+.runbtns{display:flex;gap:8px;flex-wrap:wrap}
+.rb{cursor:pointer;background:transparent;border:1px solid var(--dimmer);color:var(--dim);
+  border-radius:4px;padding:7px 12px;font-family:'Silkscreen';font-size:8px;letter-spacing:1px;transition:.15s}
+.rb:hover{color:var(--ink);border-color:var(--ink)}
+.rb.go{border-color:var(--volt);color:var(--volt)}
+.rb.go:hover{background:var(--volt);color:var(--bg)}
+.rb.danger{border-color:var(--danger);color:var(--danger)}
+.rb.danger:hover{background:var(--danger);color:#fff}
+
+.legend{border-top:1px solid var(--dimmer);padding-top:16px;font-size:8px;color:var(--dim);line-height:2;letter-spacing:.5px}
+.legend b{color:var(--ink)}
+.legend .lA{color:var(--ice)}.legend .lB{color:var(--volt)}
+.notes{font-size:8px;color:var(--dim);line-height:1.9;letter-spacing:.3px;border-left:2px solid var(--volt-d);padding-left:12px}
+.notes b{color:var(--volt)}
+
+@media (max-width:720px){.brand h1{font-size:26px}.specsheet{display:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="masthead">
+    <div class="brand">
+      <span class="kicker">M5STACK CARDPUTER · ESP32-S3</span>
+      <h1>VESC <b>AI</b> TUNER</h1>
+      <span class="sub">Ride telemetry HUD · black-box logger · Refloat tune review &amp; apply. Native 240×135 instrument UI.</span>
+    </div>
+    <div class="specsheet">
+      DISPLAY <b>1.14" IPS</b><br>
+      NATIVE <span class="res">240×135</span><br>
+      LINK <b>BLE · NUS · CAN-FWD</b><br>
+      BOARD <b>FLOATWHEEL ADV2</b>
+    </div>
+  </div>
+
+  <div class="stage">
+
+    <!-- ========== DEVICE ========== -->
+    <div class="device-col">
+      <div class="device">
+        <div class="bezel">
+          <div class="screen-scaler">
+            <div class="screen" id="screen">
+              <div class="glass"></div><div class="scan"></div><div class="vig"></div>
+
+              <!-- ===== HUD (B) ===== -->
+              <!-- RIDE — glanceable essentials -->
+              <div class="view active" id="ride">
+                <div class="statbar">
+                  <div class="l"><span class="dot on" id="s-ble"></span>ADV2<span class="dot on" id="s-can"></span>CAN 84<span class="fp"><span class="pad-lab">F1</span><span class="pad-dot on" id="pad-a"></span></span><span class="fp"><span class="pad-lab">F2</span><span class="pad-dot on" id="pad-b"></span></span></div>
+                  <div class="r"><span class="mode-pill">RIDE</span><span class="dot rec"></span>REC <span id="s-clock">00:00</span></div>
+                </div>
+                <div class="body">
+                  <div class="megabars">
+                    <div class="mbar speed">
+                      <div class="mtrack"><div class="mfill" id="h-speedbar"></div></div>
+                      <span class="mlabel">SPEED</span>
+                      <div class="mval"><span class="num" id="h-speed">0</span><span class="mu">KM/H</span></div>
+                    </div>
+                    <div class="mbar duty">
+                      <div class="mtrack"><div class="mfill" id="h-dutybar"></div></div>
+                      <span class="mlabel">DUTY</span>
+                      <div class="mval"><span class="num" id="h-duty">0</span><span class="mu">%</span></div>
+                    </div>
+                    <div class="mbar pitch">
+                      <div class="mtrack"></div>
+                      <span class="pmid"></span>
+                      <span class="pgap" id="r-pgap"></span>
+                      <i class="pmk sp" id="r-spm"></i>
+                      <i class="pmk pt" id="r-ptm"></i>
+                      <span class="mlabel">PITCH</span>
+                      <div class="mval"><span class="num" id="r-pitch">+0</span><span class="mu">°</span><span class="psp-val">SP <b id="r-setp">+0</b>°</span></div>
+                    </div>
+                  </div>
+                  <div class="ridetemps">
+                    <div class="t2 big"><span>CTRL</span><b id="r-fet">0</b><small>°C</small></div>
+                    <div class="t2 big"><span>MOTOR</span><b id="r-mot">0</b><small>°C</small></div>
+                    <div class="t2 big"><span>BAT</span><b id="r-bat">--</b><small>°C</small></div>
+                  </div>
+                </div>
+                <div class="battery">
+                  <span class="pct" id="h-batt">0%</span>
+                  <div class="track"><div class="fill" id="h-battbar"></div></div>
+                  <span class="trip">TRIP <b id="h-trip">0.0</b>km · <b id="h-whkm">0</b>wh/km</span>
+                </div>
+              </div>
+
+              <!-- DETAIL — full data (review on Mac) -->
+              <div class="view" id="detail">
+                <div class="statbar">
+                  <div class="l"><span class="dot on"></span>ADV2<span class="dot on"></span>CAN 84</div>
+                  <div class="r"><span class="mode-pill" style="background:var(--ice)">DETAIL</span><span class="dot rec"></span>REC</div>
+                </div>
+                <div class="dgrid">
+                  <div class="dcell"><span class="dk">V / CELL</span><span class="dv hot" id="d-vcell">4.06</span></div>
+                  <div class="dcell"><span class="dk">PACK</span><span class="dv" id="d-pack">81.2V</span></div>
+                  <div class="dcell"><span class="dk">A IN</span><span class="dv" id="d-ain">0</span></div>
+                  <div class="dcell"><span class="dk">A MOTOR</span><span class="dv" id="d-amot">0</span></div>
+                  <div class="dcell"><span class="dk">POWER</span><span class="dv" id="d-kw">0kW</span></div>
+                  <div class="dcell"><span class="dk">PITCH</span><span class="dv" id="d-pitch">+0.0</span></div>
+                  <div class="dcell"><span class="dk">ROLL</span><span class="dv" id="d-roll">-0.4</span></div>
+                  <div class="dcell"><span class="dk">SETPOINT</span><span class="dv hot" id="d-setp">+0.0</span></div>
+                  <div class="dcell"><span class="dk">ATR SET</span><span class="dv">+1.8</span></div>
+                  <div class="dcell"><span class="dk">TORQUE-TILT</span><span class="dv">+0.6</span></div>
+                  <div class="dcell"><span class="dk">TURN-TILT</span><span class="dv">0.0</span></div>
+                  <div class="dcell"><span class="dk">ADC1 / ADC2</span><span class="dv">.82/.79</span></div>
+                  <div class="dcell"><span class="dk">BOOSTER</span><span class="dv">2A</span></div>
+                  <div class="dcell"><span class="dk">FOC ID</span><span class="dv">0.3A</span></div>
+                  <div class="dcell"><span class="dk">STATE</span><span class="dv hot" id="d-state">RUNNING</span></div>
+                  <div class="dcell"><span class="dk">FAULT</span><span class="dv ice">NONE</span></div>
+                </div>
+              </div>
+
+              <!-- ===== FAULT (B) ===== -->
+              <div class="view" id="fault">
+                <div class="statbar"><div class="l"><span class="dot on"></span>ADV2</div><div class="r"><span class="mode-pill" style="background:var(--danger);color:#fff">FAULT</span></div></div>
+                <div class="fwrap">
+                  <div class="bang">!</div>
+                  <div class="fname" id="f-name">DUTY CYCLE</div>
+                  <div class="fcode" id="f-code">MC_FAULT · CODE 03</div>
+                  <div class="fsub">RECORDED TO SD · session_014.csv</div>
+                </div>
+              </div>
+
+              <!-- ===== TRIP (B) ===== -->
+              <div class="view" id="trip">
+                <div class="statbar"><div class="l"><span class="dot on"></span>ADV2</div><div class="r"><span class="mode-pill">SUMMARY</span></div></div>
+                <div class="body">
+                  <div class="ttitle">RIDE SUMMARY<small>SESSION_014 · 18:42 · 23m41s</small></div>
+                  <div class="grid">
+                    <div class="stat hl"><span class="label">TOP SPEED</span><span class="num">34<small> km/h</small></span></div>
+                    <div class="stat"><span class="label">DISTANCE</span><span class="num">8.4<small> km</small></span></div>
+                    <div class="stat"><span class="label">AVG SPEED</span><span class="num">21<small> km/h</small></span></div>
+                    <div class="stat"><span class="label">PEAK DUTY</span><span class="num">92<small> %</small></span></div>
+                    <div class="stat"><span class="label">MAX A IN</span><span class="num">71<small> A</small></span></div>
+                    <div class="stat hl"><span class="label">MAX FET</span><span class="num">74<small> °C</small></span></div>
+                    <div class="stat"><span class="label">WH USED</span><span class="num">182</span></div>
+                    <div class="stat"><span class="label">EFFIC.</span><span class="num">21<small> wh/km</small></span></div>
+                    <div class="stat"><span class="label">FAULTS</span><span class="num" style="color:var(--danger)">1</span></div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- ===== BACKUP (A) ===== -->
+              <div class="view" id="backup">
+                <div class="statbar"><div class="l"><span class="dot on"></span>BACKUP</div><div class="r"><span class="read-pill">READ</span></div></div>
+                <div class="body">
+                  <div class="atitle"><span class="t">BACKUP CONFIG</span><span class="badge" style="color:var(--ice);border-color:var(--ice)">GET 14·16·93</span></div>
+                  <div class="apanel">
+                    <div class="action"><span class="ico">▶</span><span class="at">CREATE RESTORE POINT</span><span class="ah">MCCONF·APPCONF·REFLOAT</span></div>
+                    <div class="label" style="margin:0 0 2px">SAVED RESTORE POINTS</div>
+                    <div class="bplist">
+                      <div class="bprow"><span class="cur"></span><span class="bn">backup_20260611_1842<small>FW 6.5 · REFLOAT v1.1 · 2.1 KB</small></span><span class="bt">AUTO</span></div>
+                      <div class="bprow"><span class="cur"></span><span class="bn">backup_20260610_0930<small>FW 6.5 · REFLOAT v1.1 · 2.1 KB</small></span><span class="bt manual">MANUAL</span></div>
+                      <div class="bprow"><span class="cur"></span><span class="bn">backup_factory<small>STOCK TUNE · WRITE-LOCKED</small></span><span class="bt stock">STOCK</span></div>
+                    </div>
+                  </div>
+                  <div class="sfoot"><span>● SD /backups · AUTO BEFORE EACH APPLY</span><span>3 POINTS</span></div>
+                </div>
+              </div>
+
+              <!-- ===== RESTORE (A) ===== -->
+              <div class="view" id="restore">
+                <div class="statbar"><div class="l"><span class="dot on"></span>RESTORE</div><div class="r"><span class="read-pill" style="color:var(--warn);border-color:var(--warn)">WRITES VESC</span></div></div>
+                <div class="body">
+                  <div class="atitle"><span class="t">RESTORE BACKUP</span><span class="badge" style="color:var(--volt);border-color:var(--volt-d)">SET 13·15·95</span></div>
+                  <div class="apanel">
+                    <div class="bplist">
+                      <div class="bprow sel"><span class="cur">»</span><span class="bn">backup_20260611_1842<small>FW 6.5 · 84 PARAMS</small></span><span class="bt">AUTO</span></div>
+                      <div class="bprow"><span class="cur"></span><span class="bn">backup_20260610_0930<small>FW 6.5 · 84 PARAMS</small></span><span class="bt manual">MANUAL</span></div>
+                      <div class="bprow"><span class="cur"></span><span class="bn">backup_factory<small>STOCK TUNE</small></span><span class="bt stock">STOCK</span></div>
+                    </div>
+                    <div class="gate" style="position:absolute;left:0;right:0;bottom:0">
+                      <div class="g pass">SAFETY GATE<b>BOARD IDLE ✓</b></div>
+                      <div class="g">RESTORES<b>FULL CONFIG · 84</b></div>
+                    </div>
+                  </div>
+                  <div class="sfoot"><span>↑↓ SELECT · <b>ENTER</b> RESTORE · SET→VERIFY</span><span class="warn">ARMED</span></div>
+                </div>
+              </div>
+
+              <!-- ===== BOARD (A) ===== -->
+              <div class="view" id="board">
+                <div class="statbar"><div class="l"><span class="dot on"></span>LINK OK</div><div class="r"><span class="read-pill">READ</span></div></div>
+                <div class="body">
+                  <div class="atitle"><span class="t">BOARD IDENTITY</span><span class="badge">CONNECTED</span></div>
+                  <div class="rows">
+                    <div class="brow"><span class="k">NAME</span><span class="v hot">FLOATWHEEL ADV2</span></div>
+                    <div class="brow"><span class="k">PACKAGE</span><span class="v">REFLOAT v1.1</span></div>
+                    <div class="brow"><span class="k">FIRMWARE</span><span class="v">VESC 6.5</span></div>
+                    <div class="brow"><span class="k">HARDWARE</span><span class="v">EXPRESS T</span></div>
+                    <div class="brow"><span class="k">CAN ID</span><span class="v hot">0x68 · 104</span></div>
+                    <div class="brow"><span class="k">BATTERY</span><span class="v">20S · 84.0V</span></div>
+                  </div>
+                  <div class="caps">
+                    <span class="cap">LED</span><span class="cap">RECORDER</span><span class="cap">ALERTS</span>
+                    <span class="cap off">EXT-LED</span><span class="cap off">GPS</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- ===== CONFIG (A) ===== -->
+              <div class="view" id="config">
+                <div class="statbar"><div class="l"><span class="dot on"></span>REFLOAT CFG</div><div class="r"><span class="read-pill">READ</span></div></div>
+                <div class="body">
+                  <div class="atitle"><span class="t">CONFIG · LIVE</span><span class="badge" style="color:var(--ice);border-color:var(--ice)">GET 93</span></div>
+                  <div class="clist">
+                    <div class="crow wl"><span class="ck">l_current_max</span><span class="cv">90 A</span></div>
+                    <div class="crow wl"><span class="ck">l_in_current_max</span><span class="cv">65 A</span></div>
+                    <div class="crow wl"><span class="ck">l_max_erpm</span><span class="cv">42000</span></div>
+                    <div class="crow wl"><span class="ck">l_temp_fet_start</span><span class="cv">85 °C</span></div>
+                    <div class="crow wl"><span class="ck">l_temp_fet_end</span><span class="cv">95 °C</span></div>
+                    <div class="crow"><span class="ck">atr.strength</span><span class="cv">1.10</span></div>
+                    <div class="crow"><span class="ck">torquetilt.strength</span><span class="cv">0.60</span></div>
+                    <div class="crow"><span class="ck">booster.current</span><span class="cv">12 A</span></div>
+                  </div>
+                  <div class="foot"><span>WHITELIST <b>5</b> · TOTAL 84</span><span>● TUNABLE</span></div>
+                </div>
+              </div>
+
+              <!-- ===== REVIEW (A) ===== -->
+              <div class="view" id="review">
+                <div class="statbar"><div class="l"><span class="dot on"></span>SUGGESTIONS</div><div class="r"><span class="read-pill" style="color:var(--warn);border-color:var(--warn)">ARMED</span></div></div>
+                <div class="body">
+                  <div class="rtitle"><span class="t">REVIEW TUNE</span><span class="armed">±15% GUARD</span></div>
+                  <div class="difflist">
+                    <div class="diff sel"><span class="chk y" id="d0">Y</span><div><div class="k">l_current_max</div></div><div class="vals"><span class="from">90</span><span class="arr">→</span><span class="to">99</span><span class="delta up">+10%</span></div></div>
+                    <div class="diff"><span class="chk y" id="d1">Y</span><div><div class="k">l_in_current_max</div></div><div class="vals"><span class="from">65</span><span class="arr">→</span><span class="to">72</span><span class="delta up">+11%</span></div></div>
+                    <div class="diff"><span class="chk n" id="d2">·</span><div><div class="k">l_temp_fet_start</div></div><div class="vals"><span class="from">85</span><span class="arr">→</span><span class="to">80</span><span class="delta dn">-6%</span></div></div>
+                    <div class="diff"><span class="chk y" id="d3">Y</span><div><div class="k">l_max_erpm</div></div><div class="vals"><span class="from">42000</span><span class="arr">→</span><span class="to">45000</span><span class="delta up">+7%</span></div></div>
+                  </div>
+                  <div class="rfoot"><span>↑↓ MOVE · <b style="color:var(--volt)">Y/N</b> TOGGLE · ENTER APPLY</span><span class="ok">3 ARMED</span></div>
+                </div>
+              </div>
+
+              <!-- ===== APPLY (A) ===== -->
+              <div class="view" id="apply">
+                <div class="statbar"><div class="l"><span class="dot on"></span>WRITE+VERIFY</div><div class="r"><span class="read-pill" style="color:var(--volt);border-color:var(--volt)">SET 95</span></div></div>
+                <div class="body">
+                  <div class="aTitle">APPLY TUNE</div>
+                  <div class="gate">
+                    <div class="g pass">SAFETY GATE<b>BOARD IDLE ✓</b></div>
+                    <div class="g pass">GUARD<b>±15% OK ✓</b></div>
+                  </div>
+                  <div class="wlist">
+                    <div class="wrow"><span class="st ok" id="w0">✓</span><span class="k">l_current_max</span><span class="vv">99 A</span><span class="ver" id="wv0">VERIFIED</span></div>
+                    <div class="wrow"><span class="st ok" id="w1">✓</span><span class="k">l_in_current_max</span><span class="vv">72 A</span><span class="ver" id="wv1">VERIFIED</span></div>
+                    <div class="wrow"><span class="st run" id="w2">»</span><span class="k">l_max_erpm</span><span class="vv">45000</span><span class="ver run" id="wv2">READBACK…</span></div>
+                  </div>
+                </div>
+                <div class="progress"><span>SET→GET</span><div class="track"><div class="fill" id="a-fill"></div></div><span id="a-pct">66%</span></div>
+              </div>
+
+            </div>
+          </div>
+        </div>
+        <div class="keyboard" id="kbd"></div>
+      </div>
+      <div class="devtag">PHYSICAL DEVICE · <b>M5 CARDPUTER</b> · KEYBOARD-DRIVEN</div>
+    </div>
+
+    <!-- ========== CONTROL DECK ========== -->
+    <div class="deck">
+      <h2>SCREEN INDEX</h2>
+
+      <div class="grp">
+        <span class="gl">MODE B · RIDE HUD &amp; BLACK-BOX</span>
+        <div class="keys">
+          <button class="key mB active" data-s="ride"><span class="kk">1</span><span class="kt">RIDE</span><span class="kd">glance: speed·duty·pads·ATR·temps</span></button>
+          <button class="key mB" data-s="detail"><span class="kk">2</span><span class="kt">DETAIL</span><span class="kd">all data (review on Mac)</span></button>
+          <button class="key mB" data-s="trip"><span class="kk">3</span><span class="kt">TRIP</span><span class="kd">post-ride summary</span></button>
+          <button class="key mB" data-s="fault"><span class="kk">4</span><span class="kt">FAULT</span><span class="kd">live alert · flash + beep</span></button>
+        </div>
+      </div>
+
+      <div class="grp">
+        <span class="gl">MODE A · FLOAT TUNER</span>
+        <div class="keys">
+          <button class="key mA" data-s="backup"><span class="kk">5</span><span class="kt">BACKUP</span><span class="kd">dump full config to SD</span></button>
+          <button class="key mA" data-s="restore"><span class="kk">6</span><span class="kt">RESTORE</span><span class="kd">write backup back to VESC</span></button>
+          <button class="key mA" data-s="board"><span class="kk">7</span><span class="kt">BOARD</span><span class="kd">identity · caps · CAN id</span></button>
+          <button class="key mA" data-s="config"><span class="kk">8</span><span class="kt">CONFIG</span><span class="kd">live Refloat params</span></button>
+          <button class="key mA" data-s="review"><span class="kk">9</span><span class="kt">REVIEW</span><span class="kd">suggestion diff · Y/N</span></button>
+          <button class="key mA" data-s="apply"><span class="kk">0</span><span class="kt">APPLY</span><span class="kd">write + readback verify</span></button>
+        </div>
+      </div>
+
+      <div class="runbtns">
+        <button class="rb go" id="btn-ride">▶ DEMO RIDE</button>
+        <button class="rb danger" id="btn-fault">⚠ TRIGGER FAULT</button>
+        <button class="rb" id="btn-stop">■ STOP</button>
+      </div>
+
+      <div class="notes">
+        <b>Authored at native 240×135.</b> Layout, density &amp; type sizes are the real device spec — every screen ports 1:1 to M5GFX draw calls. Dot-matrix numerals = embedded bitmap font; lime = phosphor accent.
+      </div>
+
+      <div class="legend">
+        <span class="lB">■ MODE B</span> — drive the board: live cluster, fault alerts w/ speaker beep, auto black-box logging to SD.<br>
+        <span class="lA">■ MODE A</span> — tune the board: <b>backup → restore</b> safety net first, then read Refloat config (CAN-forwarded), review Mac/Claude suggestions, apply with <b>whitelist + ±15% + readback verify</b>.<br>
+        <b>Keys 1–9</b> switch screens · <b>G</b> demo ride · <b>F</b> fault · <b>S</b> stop.
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// keyboard hint row
+const kbd=document.getElementById('kbd');
+for(let i=0;i<42;i++){const s=document.createElement('span');kbd.appendChild(s);}
+
+// ---- screen switching ----
+const views=[...document.querySelectorAll('.view')];
+const keys=[...document.querySelectorAll('.key')];
+function show(id){
+  views.forEach(v=>v.classList.toggle('active',v.id===id));
+  keys.forEach(k=>k.classList.toggle('active',k.dataset.s===id));
+  document.getElementById('fault').classList.toggle('flash',id==='fault'&&faultOn);
+}
+keys.forEach(k=>k.addEventListener('click',()=>show(k.dataset.s)));
+const keymap={'1':'ride','2':'detail','3':'trip','4':'fault','5':'backup','6':'restore','7':'board','8':'config','9':'review','0':'apply'};
+addEventListener('keydown',e=>{
+  if(keymap[e.key])show(keymap[e.key]);
+  if(e.key.toLowerCase()==='g')startRide();
+  if(e.key.toLowerCase()==='f')triggerFault();
+  if(e.key.toLowerCase()==='s')stopRide();
+});
+
+// ---- mega bars (speed + duty) ----
+const SPEED_MAX=45;
+function setSpeedBar(v){
+  const e=document.getElementById('h-speedbar');
+  if(e) e.style.width=Math.min(100,v/SPEED_MAX*100)+'%';
+}
+function setDuty(p){
+  const fill=document.getElementById('h-dutybar');
+  if(fill){
+    fill.style.width=Math.min(100,p)+'%';
+    fill.style.background = p>88 ? 'linear-gradient(90deg,#a81226,var(--danger))'
+                          : p>72 ? 'linear-gradient(90deg,#a86b12,var(--warn))'
+                                 : 'linear-gradient(90deg,var(--volt-d),var(--volt))';
+  }
+  const n=document.getElementById('h-duty'); if(n) n.textContent=Math.round(p);
+}
+
+// ---- live telemetry sim ----
+const S={speed:0,duty:0,vcell:4.06,ain:0,amot:0,fet:32,mot:30,pitch:0,setp:0,batt:96,trip:0,whkm:0,rpm:0,t:0};
+const T={speed:0,duty:0,ain:0,amot:0,fet:34,mot:32,pitch:0};
+let riding=false,faultOn=false,rideT=0;
+const $=id=>document.getElementById(id);
+const ease=(a,b,k)=>a+(b-a)*k;
+
+function startRide(){riding=true;faultOn=false;rideT=0;document.getElementById('fault').classList.remove('flash');show('hud');}
+function stopRide(){riding=false;T.speed=0;T.duty=0;T.ain=0;T.amot=0;T.pitch=0;}
+function triggerFault(){
+  faultOn=true;riding=false;T.speed=0;T.duty=0;T.ain=0;T.amot=0;
+  show('fault');document.getElementById('fault').classList.add('flash');
+  // simulate beep via title flicker (no audio autoplay)
+  setTimeout(()=>{ if(faultOn) {} },50);
+}
+document.getElementById('btn-ride').onclick=startRide;
+document.getElementById('btn-fault').onclick=triggerFault;
+document.getElementById('btn-stop').onclick=stopRide;
+
+function ride(dt){
+  rideT+=dt;
+  // scripted velocity envelope
+  const ph=rideT%26;
+  if(ph<8) T.speed=ease(T.speed,30,.04);
+  else if(ph<13) T.speed=ease(T.speed,34,.05);
+  else if(ph<19) T.speed=ease(T.speed,18,.05);
+  else T.speed=ease(T.speed,27,.04);
+  // auto fault near 24s
+  if(ph>23.4 && ph<23.6 && !faultOn && Math.random()<.5){triggerFault();}
+  T.duty=Math.min(96, T.speed*2.6 + Math.sin(rideT*3)*5);
+  T.ain=T.speed*1.5 + Math.sin(rideT*5)*8;
+  T.amot=T.ain*1.7;
+  T.fet=ease(T.fet, 42 + T.duty*0.34, .02);
+  T.mot=ease(T.mot, 38 + T.speed*0.5, .02);
+  T.pitch=Math.sin(rideT*2)*5 + (T.speed>20?2:0);
+}
+
+let last=performance.now();
+function frame(now){
+  const dt=(now-last)/1000;last=now;
+  if(riding)ride(dt);
+  // ease state toward targets
+  for(const k of ['speed','duty','ain','amot','fet','mot','pitch']) S[k]=ease(S[k],T[k],.18);
+  S.vcell=ease(S.vcell, 4.06 - (S.ain/90)*0.55, .1);
+  S.rpm=S.speed*1240;
+  S.setp = S.pitch*0.6;
+  if(riding){ S.trip+=S.speed*dt/3600; S.t+=dt; }
+  S.whkm = S.speed>3 ? Math.round(15+S.ain*0.18) : 0;
+  S.batt = Math.max(8, 96 - S.trip*2.4);
+
+  // guarded setters — elements differ per screen (RIDE vs DETAIL)
+  const T=(id,v)=>{const e=$(id);if(e)e.textContent=v;};
+  const H=(id,v)=>{const e=$(id);if(e)e.innerHTML=v;};
+  const W=(id,w)=>{const e=$(id);if(e)e.style.width=w;};
+  const BG=(id,b)=>{const e=$(id);if(e)e.style.background=b;};
+  const sgn=v=>(v>=0?'+':'')+v.toFixed(1);
+
+  T('h-speed',Math.round(S.speed)); setSpeedBar(S.speed); setDuty(S.duty);
+  // RIDE temps (big)
+  T('r-fet',Math.round(S.fet)); T('r-mot',Math.round(S.mot));
+  // RIDE pitch/setpoint bar (under duty)
+  const clampP=v=>50+Math.max(-48,Math.min(48,v/15*48));
+  const pp=clampP(S.pitch), spp=clampP(S.setp);
+  const spm=$('r-spm'); if(spm)spm.style.left=spp+'%';
+  const ptm=$('r-ptm'); if(ptm)ptm.style.left=pp+'%';
+  const gp=$('r-pgap'); if(gp){const lo=Math.min(pp,spp),hi=Math.max(pp,spp);gp.style.left=lo+'%';gp.style.width=(hi-lo)+'%';}
+  T('r-pitch',sgn(S.pitch)); T('r-setp',sgn(S.setp));
+  // RIDE footpad dots in status bar
+  const onpad=S.speed>1||riding;
+  ['pad-a','pad-b'].forEach(id=>{const e=$(id);if(e)e.classList.toggle('on',onpad);});
+  // battery footer
+  T('h-batt',Math.round(S.batt)+'%'); W('h-battbar',S.batt+'%');
+  BG('h-battbar',S.batt<15?'var(--danger)':S.batt<30?'linear-gradient(90deg,#a86b12,var(--warn))':'linear-gradient(90deg,var(--volt-d),var(--volt))');
+  T('h-trip',S.trip.toFixed(1)); T('h-whkm',S.whkm);
+  // DETAIL bindings
+  T('d-vcell',S.vcell.toFixed(2)); T('d-pack',(S.vcell*20).toFixed(1)+'V');
+  T('d-ain',Math.round(S.ain)); T('d-amot',Math.round(S.amot));
+  T('d-kw',(S.vcell*20*S.ain/1000).toFixed(1)+'kW');
+  T('d-pitch',sgn(S.pitch)); T('d-setp',sgn(S.setp));
+  // state pill / clock
+  const st = S.duty>88?['TILTBACK','var(--danger)']: S.speed>2?['RUNNING','var(--ok)']:['READY','var(--dim)'];
+  T('d-state',st[0]);
+  T('s-clock',String(Math.floor(S.t/60)).padStart(2,'0')+':'+String(Math.floor(S.t%60)).padStart(2,'0'));
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// gentle idle motion so the HUD is never dead
+setDuty(0);
+</script>
+</body>
+</html>

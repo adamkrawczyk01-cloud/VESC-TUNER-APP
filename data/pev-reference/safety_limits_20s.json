@@ -1,0 +1,44 @@
+{
+  "_source": "pev.dev community + theboardgarage.com",
+  "_battery": "20S LiPo/Li-Ion",
+  "voltage": {
+    "full_V": 84.0,
+    "nominal_V": 72.0,
+    "empty_V": 60.0,
+    "cell_full_V": 4.2,
+    "cell_nominal_V": 3.6,
+    "cell_min_V": 3.0,
+    "high_voltage_tiltback_V": 85.0,
+    "low_voltage_tiltback_V": 60.0,
+    "cutoff_start_V": 46.0,
+    "cutoff_end_V": 40.0
+  },
+  "current": {
+    "battery_current_max_A": 30.0,
+    "battery_regen_max_A": 15.0,
+    "motor_current_max_A": 120.0,
+    "motor_current_min_A": -120.0,
+    "note": "Float Package dynamically changes effective limit based on ATR/torque tilt - 120A in motor config is NOT the real riding limit"
+  },
+  "temperature": {
+    "fet_cutoff_start_C": 70.0,
+    "fet_cutoff_end_C": 80.0,
+    "fet_warning_C": 65.0,
+    "fet_absolute_max_C": 100.0,
+    "motor_cutoff_start_C": 80.0,
+    "motor_cutoff_end_C": 90.0,
+    "motor_warning_C": 75.0,
+    "motor_absolute_max_C": 100.0,
+    "battery_warning_C": 50.0,
+    "battery_critical_C": 60.0,
+    "note_fet": "If PLA/PETG enclosure keep FET below 70C - softens at 70-80C",
+    "note_motor": "Above 82C magnets weaken, above 100C risk demagnetization"
+  },
+  "sandbox_limits": {
+    "l_current_max":     { "min": 20.0,  "max": 120.0,  "max_change_pct": 15 },
+    "l_in_current_max":  { "min": 10.0,  "max": 60.0,   "max_change_pct": 15 },
+    "l_max_erpm":        { "min": 10000, "max": 120000,  "max_change_pct": 15 },
+    "l_temp_fet_start":  { "min": 60.0,  "max": 85.0,   "max_change_pct": 15 },
+    "l_temp_fet_end":    { "min": 65.0,  "max": 95.0,   "max_change_pct": 15 }
+  }
+}

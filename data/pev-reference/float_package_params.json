@@ -1,0 +1,49 @@
+{
+  "_source": "pev.dev Float Package documentation",
+  "_version": "Float Package v2.0",
+  "whitelist_params": {
+    "l_current_max": {
+      "description": "Max motor current - Float Package dynamically adjusts this based on ATR",
+      "vesc_tool_path": "Motor Config → General → Current",
+      "typical_20s": 100.0,
+      "safe_range": [20, 120],
+      "effect": "Higher = more torque/power, higher nosedive risk"
+    },
+    "l_in_current_max": {
+      "description": "Max battery input current",
+      "vesc_tool_path": "Motor Config → General → Current",
+      "typical_20s2p": 30.0,
+      "safe_range": [10, 60],
+      "effect": "Limits battery draw - critical for battery health on 2P packs"
+    },
+    "l_max_erpm": {
+      "description": "Max electrical RPM = top speed limit",
+      "vesc_tool_path": "Motor Config → General → RPM",
+      "safe_range": [10000, 120000],
+      "effect": "Hard speed cap - tiltback should trigger before this"
+    },
+    "l_temp_fet_start": {
+      "description": "FET temperature at which current reduction begins",
+      "vesc_tool_path": "Motor Config → Temperature",
+      "recommended": 70.0,
+      "safe_range": [60, 85],
+      "note": "Float Package adds tiltback 3C before this value"
+    },
+    "l_temp_fet_end": {
+      "description": "FET temperature at which current is fully cut",
+      "vesc_tool_path": "Motor Config → Temperature",
+      "recommended": 80.0,
+      "safe_range": [65, 95],
+      "note": "Must be higher than l_temp_fet_start"
+    }
+  },
+  "readonly_params": {
+    "note": "Te parametry NIE są na whiteliście - nie dotykamy ich automatycznie",
+    "params": [
+      "foc_motor_r", "foc_motor_l", "foc_motor_flux_linkage",
+      "foc_observer_gain", "foc_hall_interp_erpm", "motor_poles",
+      "si_wheel_diameter", "si_motor_poles", "foc_sensor_mode",
+      "cc_min_current", "cc_gain", "l_battery_cut_start", "l_battery_cut_end"
+    ]
+  }
+}

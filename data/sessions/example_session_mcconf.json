@@ -1,0 +1,36 @@
+{
+  "_note": "Przyklad COMM_GET_MCCONF (cmd 14) — l_temp_fet_start celowo 68C (board osiagnal 73C → alert)",
+  "_session": "example_session",
+  "_recorded_at": "2026-03-25T08:00:00Z",
+
+  "l_current_max":         100.0,
+  "l_in_current_max":       30.0,
+  "l_max_erpm":           70000,
+  "l_temp_fet_start":       68.0,
+  "l_temp_fet_end":         80.0,
+  "l_temp_motor_start":     80.0,
+  "l_temp_motor_end":       90.0,
+  "l_battery_cut_start":    62.0,
+  "l_battery_cut_end":      58.0,
+  "l_current_min":        -100.0,
+  "l_in_current_min":      -15.0,
+  "l_abs_current_max":     150.0,
+  "l_slow_abs_current":      true,
+  "l_min_erpm":           -70000,
+  "l_erpm_start":            0.3,
+  "l_max_duty":              0.95,
+  "l_min_duty":              0.005,
+
+  "foc_motor_r":             0.08789,
+  "foc_motor_l":             0.000233,
+  "foc_motor_flux_linkage":  0.02793,
+  "foc_observer_gain":       8.5e7,
+  "foc_hall_interp_erpm":    200,
+  "foc_sensor_mode":         2,
+  "motor_poles":             30,
+
+  "si_wheel_diameter":       0.254,
+  "si_motor_poles":          15,
+  "cc_min_current":          0.1,
+  "cc_gain":                 0.0046
+}

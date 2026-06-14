@@ -1,0 +1,36 @@
+{
+  "_source": "pev.dev community benchmarks",
+  "duty_cycle": {
+    "safe_max_pct": 80.0,
+    "warning_pct": 85.0,
+    "critical_pct": 90.0,
+    "note": "Float Package tiltback triggers before motor limit - duty 85%+ is nosedive territory"
+  },
+  "current_spikes": {
+    "normal_per_session": 0,
+    "acceptable_per_session": 3,
+    "investigate_per_session": 5,
+    "note": "Spike = input current exceeding 80% of l_in_current_max"
+  },
+  "efficiency": {
+    "city_wh_per_km":  { "good": 15, "average": 22, "poor": 35 },
+    "trail_wh_per_km": { "good": 25, "average": 38, "poor": 55 },
+    "note": "Higher Wh/km = harder riding or inefficient tune"
+  },
+  "motor_detection_superflux": {
+    "resistance_mOhm": 87.89,
+    "inductance_uH": 232.90,
+    "flux_linkage_mWb": 27.93,
+    "observer_gain_note": "Set to half of detected value",
+    "hall_interpolation_erpm": 200,
+    "sensorless_erpm": 2000,
+    "source": "theboardgarage.com Superflux setup"
+  },
+  "anomaly_thresholds": {
+    "temp_rise_per_min_warning_C": 3.0,
+    "temp_rise_per_min_critical_C": 6.0,
+    "voltage_sag_warning_V": 4.0,
+    "voltage_sag_critical_V": 7.0,
+    "rpm_drop_nosedive_threshold": 800
+  }
+}

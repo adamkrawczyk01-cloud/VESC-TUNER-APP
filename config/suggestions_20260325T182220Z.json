@@ -1,0 +1,84 @@
+{
+  "session": "example_session",
+  "generated_at": "20260325T182220Z",
+  "mcconf_source": "data/sessions/example_session_mcconf.json",
+  "config_alerts": [
+    {
+      "level": "critical",
+      "param": "l_temp_fet_start",
+      "message": "FET PRZEKROCZYL prog startu dławienia — VESC throttlował prad silnikowy (max 73.1C > prog 68.0C = utrata mocy podczas jazdy)",
+      "value": "73.1C osiagniete",
+      "expected": "max_temp_fet < 68.0C"
+    }
+  ],
+  "nosedive_score": 90,
+  "suggestions": [
+    {
+      "param": "l_max_erpm",
+      "current": 70000,
+      "suggested": 63000,
+      "delta_pct": -10.0,
+      "reason": "Nosedive Risk Score 90/100 — obniż l_max_erpm",
+      "confidence": "high",
+      "safety_impact": "critical",
+      "safety_consequence": "Bez zmiany ryzyko nosedive przy predkosci >26km/h wzrasta o ~60%. Nosedive = natychmiastowy upadek bez ostrzezenia.",
+      "evidence": [
+        "nosedive_score=90/100",
+        "risk=NIEBEZPIECZNE",
+        "duty>85% @ >20km/h: 1 event(s) +30pkt",
+        "voltage sag 13.9V (>8V): +20pkt"
+      ],
+      "safe": true
+    },
+    {
+      "param": "l_temp_fet_start",
+      "current": 68.0,
+      "suggested": 63.0,
+      "delta_pct": -7.4,
+      "reason": "FET osiagnal 73C = prog ciecia 70C — obniz prog",
+      "confidence": "high",
+      "safety_impact": "high",
+      "safety_consequence": "Kolejne sesje z tym configiem moga skonczyc sie thermal cutoff w polowie manewru — nagla utrata mocy na deskorolce (szac. za 0 min).",
+      "evidence": [
+        "max_temp_fet=73.1C",
+        "cutoff_start=70.0C",
+        "cutoff_end=80.0C"
+      ],
+      "safe": true
+    },
+    {
+      "param": "l_current_max",
+      "current": 100.0,
+      "suggested": 88.0,
+      "delta_pct": -12.0,
+      "reason": "Wzrost temp FET 29.5C/min (krit.=6.0C/min) — redukcja",
+      "confidence": "high",
+      "safety_impact": "high",
+      "safety_consequence": "FET JUZ przekroczyl prog cutoff 70C (osiagnieto 73.1C) — thermal cutoff nastapil w tej sesji, VESC uciął moc podczas jazdy.",
+      "evidence": [
+        "max_temp_rise=29.50C/min",
+        "max_temp_fet=73.1C"
+      ],
+      "safe": true
+    },
+    {
+      "param": "l_in_current_max",
+      "current": 30.0,
+      "suggested": 26.5,
+      "delta_pct": -11.7,
+      "reason": "6x prad bat. >80% limitu (24A) — ochrona ogniw 2P",
+      "confidence": "medium",
+      "safety_impact": "medium",
+      "safety_consequence": "Bez zmiany ogniwa 2P narazone na cykliczne przeciazenia. Degradacja pojemnosci i ryzyko BMS cutoff podczas jazdy.",
+      "evidence": [
+        "spike_count=6",
+        "max_curr_in=28.4A",
+        "threshold=24.0A",
+        "ts=8964.0ms (27.6A)",
+        "ts=17928.0ms (27.9A)",
+        "ts=23904.0ms (27.9A)"
+      ],
+      "safe": true
+    }
+  ]
+}

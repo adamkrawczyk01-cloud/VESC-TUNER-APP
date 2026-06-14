@@ -1,0 +1,63 @@
+{
+  "session": "example_session",
+  "generated_at": "20260325T180502Z",
+  "mcconf_source": "data/sessions/example_session_mcconf.json",
+  "suggestions": [
+    {
+      "param": "l_in_current_max",
+      "current": 30.0,
+      "suggested": 33.5,
+      "delta_pct": 11.7,
+      "reason": "6x prad bat. >24A (80% limitu 30A) — redukcja limitu",
+      "confidence": "medium",
+      "evidence": [
+        "spike_count=6",
+        "max_curr_in=28.4A",
+        "threshold=24.0A",
+        "ts=8964.0ms (27.6A)",
+        "ts=17928.0ms (27.9A)",
+        "ts=23904.0ms (27.9A)"
+      ],
+      "safe": true
+    },
+    {
+      "param": "l_max_erpm",
+      "current": 70000,
+      "suggested": 63000,
+      "delta_pct": -10.0,
+      "reason": "3x duty>85% + 1 kandydat nosedive — obniz l_max_erpm",
+      "confidence": "high",
+      "evidence": [
+        "duty_over_85=3",
+        "nosedives=1",
+        "ts=35856.0ms drop=1032rpm duty=68%"
+      ],
+      "safe": true
+    },
+    {
+      "param": "l_temp_fet_start",
+      "current": 70.0,
+      "suggested": 65.0,
+      "delta_pct": -7.1,
+      "reason": "FET osiagnal 73C = prog ciecia 70C — obniz prog",
+      "confidence": "high",
+      "evidence": [
+        "max_temp_fet=73.1C",
+        "cutoff_start=70.0C"
+      ],
+      "safe": true
+    },
+    {
+      "param": "l_current_max",
+      "current": 100.0,
+      "suggested": 88.0,
+      "delta_pct": -12.0,
+      "reason": "Wzrost temp FET 29.5C/min (krit.=6.0C/min) — redukcja l_current_max",
+      "confidence": "high",
+      "evidence": [
+        "max_temp_rise=29.50C/min"
+      ],
+      "safe": true
+    }
+  ]
+}
