@@ -267,6 +267,7 @@ static uint32_t gLastBmsMs = 0;
 static uint32_t gLastSetupMs = 0;
 static uint32_t gLastImuMs = 0;
 static int      gBmsDbgN   = 0;          // serial-dump first few BMS replies
+static int      gBmsReplies = 0;         // total BMS responses seen (diagnostic)
 static int      gSetupDbgN = 0, gImuDbgN = 0;
 static uint32_t gLastCsvMs = 0;
 static uint32_t gTripMs    = 0;
@@ -509,6 +510,15 @@ static void parseBms(const uint8_t* p, int len) {
     }
     gBms.valid = (cn > 0);
     if (cn > 0) gV.bms = true;
+}
+
+// Send a single-byte command WITHOUT CAN-forward (straight to the ESP32 bridge).
+static void vescSendRawCmd(uint8_t cmd) {
+    if (!gCharRx || !gBleOk) return;
+    uint8_t pkt[12], pay[1] = { cmd };
+    int len = buildPkt(pkt, pay, 1);
+    gTxCount++;
+    gCharRx->writeValue(pkt, len, !gUseWriteNoResp);
 }
 
 // Request raw IMU (mask 0x01FF = roll,pitch,yaw,acc xyz,gyro xyz).
@@ -2081,8 +2091,16 @@ static void drawCells() {
     uiStatBar("BMS CELLS", gBms.valid ? "LIVE" : "--", gBms.valid ? C_OK : C_DGREY, "");
     if (!gBms.valid || gBms.cellNum == 0) {
         canvas.setTextColor(C_GREY); canvas.setTextDatum(MC_DATUM); canvas.setTextSize(1);
-        canvas.drawString(gBleOk ? "waiting for BMS data..." : "not connected", DW / 2, 70);
-        canvas.setTextDatum(TL_DATUM); return;
+        if (!gBleOk) {
+            canvas.drawString("not connected", DW / 2, 70);
+        } else {
+            char m[44]; snprintf(m, sizeof(m), "no cell data  (BMS replies: %d)", gBmsReplies);
+            canvas.drawString(m, DW / 2, 64);
+            canvas.setTextColor(C_DGREY);
+            canvas.drawString(gBmsReplies > 0 ? "BMS answers but no cells in packet"
+                                              : "BMS not answering cmd 96", DW / 2, 80);
+        }
+        canvas.setTextDatum(TL_DATUM); canvas.setTextSize(1); return;
     }
     float mn = 99, mx = 0; int mni = 0;
     for (int i = 0; i < gBms.cellNum; i++) {
@@ -2285,10 +2303,12 @@ void loop() {
         gLastAllMs = now;
         vescSendAllData();
     }
-    // Poll Smart BMS values @1Hz (battery temperature etc.)
+    // Poll Smart BMS values @1Hz — try both the CAN-forwarded motor controller
+    // and the ESP32 bridge directly (depending on which one aggregates the BMS).
     if (gBleOk && now - gLastBmsMs >= 1000) {
         gLastBmsMs = now;
-        vescSend(CMD_BMS_GET_VALUES);
+        vescSend(CMD_BMS_GET_VALUES);        // CAN-forward to motor controller
+        vescSendRawCmd(CMD_BMS_GET_VALUES);  // direct to ESP32 bridge
     }
     // Poll setup values @1Hz (battery %, odometer) and raw IMU @5Hz (accel/gyro)
     if (gBleOk && now - gLastSetupMs >= 1000) {
@@ -2321,6 +2341,7 @@ void loop() {
                     if (plen <= (int)sizeof(gCustomCfgRaw)) { memcpy(gCustomCfgRaw, pay, plen); gCustomCfgRawLen = plen; }
                     break;
                 case CMD_BMS_GET_VALUES:
+                    gBmsReplies++;
                     if (gBmsDbgN < 5) {       // dump raw a few times to verify byte layout
                         gBmsDbgN++;
                         Serial.printf("[BMS] len=%d:", plen);
