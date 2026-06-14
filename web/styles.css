@@ -1,0 +1,108 @@
+/* ============================================================
+   VESC Tuner — desktop dashboard
+   Theme tokens copied 1:1 from the VibeWheel app (theme.ts)
+   ============================================================ */
+:root{
+  --bg:#111827; --surface:#1e293b; --surface-deep:#0f172a; --border:#334155;
+  --text:#f1f5f9; --text2:#94a3b8; --muted:#64748b; --dim:#475569;
+  --bran:#06b6d4; --bran-bg:#083344; --bran-text:#67e8f9;
+  --wheel:#38bdf8; --gps:#22c55e; --target:#a855f7; --warning:#f97316;
+  --error:#ef4444; --highlight:#facc15; --teal:#14b8a6;
+  --row:#253548;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:var(--bg); color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,sans-serif;
+  font-size:14px; -webkit-font-smoothing:antialiased; overflow:hidden;
+}
+.mono{font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}
+
+/* ---- shell ---- */
+.app{display:grid;grid-template-columns:212px 1fr;height:100vh}
+.sidebar{background:var(--surface-deep);border-right:1px solid var(--border);
+  display:flex;flex-direction:column;padding:18px 0}
+.brand{padding:0 18px 18px;border-bottom:1px solid var(--border);margin-bottom:8px}
+.brand .logo{font-size:15px;font-weight:800;letter-spacing:.5px}
+.brand .logo b{color:var(--bran)}
+.brand .sub{font-size:11px;color:var(--muted);margin-top:3px}
+.sess{padding:12px 18px;border-bottom:1px solid var(--border);margin-bottom:8px}
+.sess .name{font-size:13px;font-weight:700;color:var(--wheel)}
+.sess .meta{font-size:11px;color:var(--muted);margin-top:4px;line-height:1.7}
+.sess .meta b{color:var(--text2);font-weight:600}
+nav{display:flex;flex-direction:column;gap:2px;padding:8px 10px}
+.navlbl{font-size:11px;font-weight:700;letter-spacing:1px;color:var(--muted);padding:10px 8px 4px}
+.navitem{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:8px;cursor:pointer;
+  color:var(--text2);font-size:13.5px;font-weight:600;transition:.12s;border:none;background:none;text-align:left;width:100%}
+.navitem:hover{background:var(--row);color:var(--text)}
+.navitem.active{background:var(--bran-bg);color:var(--bran-text)}
+.navitem .dot{width:7px;height:7px;border-radius:2px;flex:none}
+.spacer{flex:1}
+.loadbtn{margin:0 14px;padding:9px;border-radius:8px;border:1px solid var(--border);
+  background:var(--surface);color:var(--text);font-weight:600;font-size:12.5px;cursor:pointer}
+.loadbtn:hover{border-color:var(--bran);color:var(--bran-text)}
+
+/* ---- main ---- */
+.main{overflow-y:auto;padding:22px 26px 40px}
+.topbar{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:18px}
+.topbar h1{font-size:20px;font-weight:700}
+.topbar .hint{font-size:12px;color:var(--muted)}
+.section-title{font-size:12px;font-weight:700;letter-spacing:1px;color:var(--muted);
+  text-transform:uppercase;margin:24px 2px 12px}
+
+/* ---- KPI cards ---- */
+.kpis{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
+.kpi{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:13px 15px}
+.kpi .k{font-size:11px;color:var(--muted);font-weight:600;letter-spacing:.4px;text-transform:uppercase}
+.kpi .v{font-size:26px;font-weight:800;margin-top:6px;line-height:1}
+.kpi .v small{font-size:12px;font-weight:600;color:var(--muted);margin-left:3px}
+.kpi .sub{font-size:11px;color:var(--text2);margin-top:5px}
+
+/* ---- flags ---- */
+.flags{display:flex;flex-direction:column;gap:7px}
+.flag{display:flex;align-items:center;gap:12px;background:var(--surface);border:1px solid var(--border);
+  border-left-width:3px;border-radius:10px;padding:10px 14px;cursor:pointer;transition:.12s}
+.flag:hover{background:var(--row)}
+.flag .ico{font-weight:800;font-size:15px;width:18px;text-align:center}
+.flag .t{font-weight:600;font-size:13.5px}
+.flag .d{font-size:12px;color:var(--text2)}
+.flag .when{margin-left:auto;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+.flag.sev-err{border-left-color:var(--error)} .flag.sev-err .ico{color:var(--error)}
+.flag.sev-warn{border-left-color:var(--warning)} .flag.sev-warn .ico{color:var(--warning)}
+.flag.sev-info{border-left-color:var(--wheel)} .flag.sev-info .ico{color:var(--wheel)}
+.flag.ok{border-left-color:var(--gps)} .flag.ok .ico{color:var(--gps)}
+
+/* ---- charts ---- */
+.chart-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;
+  padding:12px 14px 6px;margin-bottom:14px}
+.chart-head{display:flex;align-items:center;gap:14px;margin-bottom:4px}
+.chart-head .ct{font-size:12px;font-weight:700;letter-spacing:.5px;color:var(--text2);text-transform:uppercase}
+.legend-pills{display:flex;gap:12px;flex-wrap:wrap}
+.lp{display:flex;align-items:center;gap:5px;font-size:11.5px;color:var(--text2)}
+.lp .sw{width:9px;height:9px;border-radius:2px}
+.lp b{color:var(--text);font-variant-numeric:tabular-nums;font-weight:700}
+
+/* ---- cell grid (battery) ---- */
+.cellgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(108px,1fr));gap:8px;margin-bottom:14px}
+.cellbox{background:var(--surface);border:1px solid var(--border);border-radius:9px;padding:8px 10px}
+.cellbox .cn{font-size:10px;color:var(--muted);font-weight:700}
+.cellbox .cv{font-size:17px;font-weight:800;font-variant-numeric:tabular-nums;margin-top:3px}
+.cellbox .bar{height:4px;border-radius:2px;background:var(--surface-deep);margin-top:6px;overflow:hidden}
+.cellbox .bar i{display:block;height:100%}
+.cellbox.low{border-color:var(--warning)}
+.cellbox.high{border-color:var(--bran)}
+
+/* ---- dropzone ---- */
+.drop{position:fixed;inset:0;background:rgba(15,23,42,.92);display:none;align-items:center;justify-content:center;z-index:50}
+.drop.on{display:flex}
+.drop .box{border:2px dashed var(--bran);border-radius:16px;padding:50px 70px;text-align:center}
+.drop .box h2{font-size:18px;margin-bottom:6px}
+.drop .box p{color:var(--text2);font-size:13px}
+
+/* uPlot dark tweaks */
+.uplot{font-family:inherit}
+.u-legend{display:none}
+.u-axis{color:var(--muted)}
+.u-cursor-x,.u-cursor-y{border-color:var(--border)!important}
+.empty{color:var(--muted);font-size:13px;padding:40px;text-align:center}
