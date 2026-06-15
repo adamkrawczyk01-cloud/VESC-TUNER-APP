@@ -39,6 +39,9 @@
 #include "USB.h"
 #include "USBMSC.h"
 #include <Preferences.h>
+#include <WiFi.h>
+#include <WebServer.h>
+#include <ESPmDNS.h>
 #include <math.h>
 
 // ── SD pins (M5Cardputer) ────────────────────────────────────────────────────
@@ -251,14 +254,18 @@ static bool     gBleOk   = false;
 static bool     gRec     = false;
 static bool     gAutoArmed = false;     // auto-start logging on next motion
 static bool     gSdOk    = false;
-static int      gScreen  = 0;           // 0 HUD 1 TRIP 2 FAULT 3 BACKUP 4 RESTORE 5 BOARD 6 CONFIG 7 REVIEW 8 APPLY
-#define SC_COUNT 10
+static int      gScreen  = 0;           // 0 HUD 1 TRIP 2 FAULT 3 BACKUP 4 RESTORE 5 BOARD 6 CONFIG 7 REVIEW 8 APPLY 10 WIFI
+#define SC_COUNT 11
 static int      gBackupSel = 0;         // selected restore point on RESTORE screen
 static uint8_t  gMcconfRaw[512];   static int gMcconfRawLen   = 0;  // raw config snapshots
 static uint8_t  gAppconfRaw[512];  static int gAppconfRawLen  = 0;
 static uint8_t  gCustomCfgRaw[768];static int gCustomCfgRawLen = 0; // Refloat package config (raw)
 static char     gBackupMsg[48] = "";    // last backup status (shown on BACKUP screen)
 static void doBackup();                 // fwd decl (defined in front-end block)
+static void drawWifi();                  // fwd decl (WiFi screen, defined before setup)
+static void renderScreen();              // fwd decl
+static bool wifiConnect();               // fwd decl
+static void wifiDisconnect();            // fwd decl
 static uint8_t  gSessNum = 0;
 static char     gSessName[32] = {};
 static uint32_t gLastValMs = 0;
@@ -1601,6 +1608,19 @@ static void handleKeys() {
             continue;
         }
 
+        // [W] — jump to WiFi screen and connect to the saved home network
+        if (c == 'w') {
+            gScreen = 10;
+            renderScreen(); canvas.pushSprite(0, 0);  // show "connecting" before the blocking connect
+            wifiConnect();
+            continue;
+        }
+        // [X] on WIFI screen — turn the radio + server off
+        if (gScreen == 10 && c == 'x') {
+            wifiDisconnect();
+            continue;
+        }
+
         // RIDE (0) — [R] toggles logging. Manual stop disarms auto-start
         // until the board reconnects (power-cycle = fresh log).
         if (gScreen == 0 && c == 'r') {
@@ -2200,6 +2220,7 @@ static void renderScreen() {
         case 7: drawConfig();  break;
         case 8: drawReview();  break;
         case 9: drawApply();   break;
+        case 10: drawWifi();   break;
     }
 }
 
@@ -2232,6 +2253,208 @@ static void autoConnectLast() {
         }
     }
     Serial.printf("[BLE] auto-connect: %s not advertising — press [P]\n", mac.c_str());
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  WiFi — home-network LAN server (read-only file download + live telemetry)
+//  Creds: SD /wifi.txt (line1 SSID, line2 password) → cached in NVS.
+//  URLs:  http://vesctuner.local/            built-in browse + live page
+//         GET /api/sessions                  JSON list of /sessions files
+//         GET /sd?f=session_001.csv          stream/download one file
+//         GET /api/live                      current telemetry JSON (poll)
+//         GET /api/info                      device + connection status
+// ═════════════════════════════════════════════════════════════════════════════
+static WebServer gWeb(80);
+static bool      gWifiOn   = false;
+static String    gWifiIp   = "";
+static String    gWifiSsid = "";
+
+static bool wifiReadCreds(String& ssid, String& pass) {
+    if (gSdOk && SD.exists("/wifi.txt")) {
+        File f = SD.open("/wifi.txt", FILE_READ);
+        if (f) {
+            ssid = f.readStringUntil('\n'); pass = f.readStringUntil('\n'); f.close();
+            ssid.trim(); pass.trim();
+            if (ssid.length()) {   // cache to NVS so it survives without the card
+                Preferences p; p.begin("vesc", false);
+                p.putString("wifi_ssid", ssid); p.putString("wifi_pass", pass); p.end();
+                return true;
+            }
+        }
+    }
+    Preferences p; p.begin("vesc", true);
+    ssid = p.getString("wifi_ssid", ""); pass = p.getString("wifi_pass", ""); p.end();
+    return ssid.length() > 0;
+}
+
+// JSON-escape a filename (filenames are simple, but be safe)
+static String jsonEsc(const String& s) {
+    String o; for (size_t i = 0; i < s.length(); i++) { char c = s[i];
+        if (c == '"' || c == '\\') { o += '\\'; o += c; } else o += c; } return o;
+}
+
+static void wifiCors() { gWeb.sendHeader("Access-Control-Allow-Origin", "*"); }
+
+static void handleSessions() {
+    wifiCors();
+    String out = "[";
+    File dir = SD.open("/sessions");
+    bool first = true;
+    if (dir) {
+        for (File e = dir.openNextFile(); e; e = dir.openNextFile()) {
+            if (e.isDirectory()) { e.close(); continue; }
+            String nm = e.name(); int sl = nm.lastIndexOf('/'); if (sl >= 0) nm = nm.substring(sl + 1);
+            if (!first) out += ",";
+            out += "{\"name\":\"" + jsonEsc(nm) + "\",\"size\":" + String((uint32_t)e.size()) + "}";
+            first = false; e.close();
+        }
+        dir.close();
+    }
+    out += "]";
+    gWeb.send(200, "application/json", out);
+}
+
+static void handleDownload() {
+    wifiCors();
+    String f = gWeb.arg("f");
+    if (f.length() == 0 || f.indexOf("..") >= 0 || f.indexOf('/') >= 0) { gWeb.send(400, "text/plain", "bad file"); return; }
+    String path = "/sessions/" + f;
+    if (!SD.exists(path)) { gWeb.send(404, "text/plain", "not found"); return; }
+    File file = SD.open(path, FILE_READ);
+    if (!file) { gWeb.send(500, "text/plain", "open failed"); return; }
+    String ct = f.endsWith(".json") ? "application/json" : f.endsWith(".csv") ? "text/csv" : "application/octet-stream";
+    gWeb.sendHeader("Content-Disposition", "attachment; filename=\"" + f + "\"");
+    gWeb.streamFile(file, ct);
+    file.close();
+}
+
+static void handleLive() {
+    wifiCors();
+    char b[420];
+    float power = gV.voltage * gV.curr_in;
+    snprintf(b, sizeof(b),
+        "{\"t\":%lu,\"ble\":%d,\"rec\":%d,\"valid\":%d,"
+        "\"speed\":%.2f,\"duty\":%.1f,\"vin\":%.2f,\"ain\":%.2f,\"amot\":%.2f,"
+        "\"power\":%.0f,\"fet\":%.1f,\"mot\":%.1f,\"batt\":%.0f,\"pitch\":%.2f,"
+        "\"rpm\":%.0f,\"wh\":%.1f,\"odo\":%.2f,\"cells\":%d}",
+        (unsigned long)millis(), gBleOk ? 1 : 0, gRec ? 1 : 0, gV.valid ? 1 : 0,
+        gV.speed_kmh, gV.duty_pct, gV.voltage, gV.curr_in, gV.curr_mot,
+        power, gV.temp_fet, gV.temp_mot, gV.batt_pct, gV.pitch,
+        gV.rpm, gV.watt_hours, gV.odo_km, gBms.cellNum);
+    gWeb.send(200, "application/json", b);
+}
+
+static void handleInfo() {
+    wifiCors();
+    char b[200];
+    snprintf(b, sizeof(b),
+        "{\"name\":\"vesc-tuner\",\"ssid\":\"%s\",\"ip\":\"%s\",\"ble\":%d,\"canid\":%d,\"sd\":%d}",
+        gWifiSsid.c_str(), gWifiIp.c_str(), gBleOk ? 1 : 0, gCanId, gSdOk ? 1 : 0);
+    gWeb.send(200, "application/json", b);
+}
+
+// Compact self-contained browse + live page (no external assets except uPlot CDN).
+static const char ROOT_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html><head>
+<meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>VESC Tuner — device</title><style>
+body{background:#0f172a;color:#e2e8f0;font:14px -apple-system,system-ui,sans-serif;margin:0;padding:18px}
+h1{font-size:17px;margin:0 0 2px}h1 b{color:#06b6d4}.sub{color:#64748b;font-size:12px;margin-bottom:16px}
+.card{background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px;margin-bottom:14px}
+.g{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:10px}
+.kv{background:#0f172a;border:1px solid #334155;border-radius:8px;padding:9px 11px}
+.kv .k{font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.5px}
+.kv .v{font-size:21px;font-weight:800;font-variant-numeric:tabular-nums;margin-top:3px}
+table{width:100%;border-collapse:collapse;font-size:13px}td,th{text-align:left;padding:7px 9px;border-bottom:1px solid #334155}
+th{color:#64748b;font-size:11px;text-transform:uppercase}a{color:#38bdf8;text-decoration:none}a:hover{text-decoration:underline}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+</style></head><body>
+<h1>VESC <b>TUNER</b> · device</h1><div class=sub id=info>on your home WiFi · read-only</div>
+<div class=card><div style="font-size:11px;color:#64748b;text-transform:uppercase;margin-bottom:10px">Live <span id=lstat></span></div>
+<div class=g id=live></div></div>
+<div class=card><div style="font-size:11px;color:#64748b;text-transform:uppercase;margin-bottom:10px">Sessions on SD</div>
+<table id=tbl><tr><th>file</th><th>size</th><th></th></tr></table></div>
+<script>
+const F=[['speed','km/h'],['duty','%'],['vin','V'],['ain','A in'],['amot','A mot'],['power','W'],['fet','FET°'],['mot','MOT°'],['batt','batt%'],['pitch','pitch°']];
+const live=document.getElementById('live');
+F.forEach(([k,l])=>{live.insertAdjacentHTML('beforeend',`<div class=kv><div class=k>${l}</div><div class=v id=v_${k}>–</div></div>`)});
+function fmt(n){return (n==null||isNaN(n))?'–':(+n).toFixed(1)}
+async function tick(){try{const r=await fetch('/api/live');const d=await r.json();
+ F.forEach(([k])=>document.getElementById('v_'+k).textContent=fmt(d[k]));
+ document.getElementById('lstat').innerHTML=`<span class=dot style="background:${d.ble?'#22c55e':'#ef4444'}"></span>${d.ble?'BLE connected':'no BLE'}${d.rec?' · REC':''}`;
+}catch(e){document.getElementById('lstat').textContent='offline'}}
+async function listing(){try{const r=await fetch('/api/sessions');const a=await r.json();
+ const t=document.getElementById('tbl');t.innerHTML='<tr><th>file</th><th>size</th><th></th></tr>';
+ a.sort((x,y)=>y.name.localeCompare(x.name));
+ a.forEach(s=>{const kb=(s.size/1024).toFixed(0)+' KB';
+  t.insertAdjacentHTML('beforeend',`<tr><td>${s.name}</td><td>${kb}</td><td><a href="/sd?f=${encodeURIComponent(s.name)}">download</a></td></tr>`)});
+}catch(e){}}
+async function info(){try{const d=await(await fetch('/api/info')).json();
+ document.getElementById('info').textContent=`${d.ip} · ssid ${d.ssid} · CAN ${d.canid} · read-only`;}catch(e){}}
+info();listing();tick();setInterval(tick,300);setInterval(listing,5000);
+</script></body></html>)HTML";
+
+static void handleRoot() { gWeb.send_P(200, "text/html", ROOT_HTML); }
+
+static void wifiRoutes() {
+    gWeb.on("/",             handleRoot);
+    gWeb.on("/api/sessions", handleSessions);
+    gWeb.on("/sd",           handleDownload);
+    gWeb.on("/api/live",     handleLive);
+    gWeb.on("/api/info",     handleInfo);
+    gWeb.onNotFound([]() { wifiCors(); gWeb.send(404, "text/plain", "not found"); });
+}
+
+// Connect to the saved home network and start the LAN server. User-triggered ([W]).
+static bool wifiConnect() {
+    String ssid, pass;
+    if (!wifiReadCreds(ssid, pass)) { Serial.println("[WiFi] no creds — put SSID/pass in SD /wifi.txt"); return false; }
+    gWifiSsid = ssid;
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid.c_str(), pass.c_str());
+    Serial.printf("[WiFi] connecting to %s ...\n", ssid.c_str());
+    uint32_t t0 = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - t0 < 12000) { delay(200); }
+    if (WiFi.status() != WL_CONNECTED) { Serial.println("[WiFi] connect timeout"); gWifiOn = false; return false; }
+    gWifiIp = WiFi.localIP().toString();
+    if (MDNS.begin("vesctuner")) MDNS.addService("http", "tcp", 80);
+    wifiRoutes();
+    gWeb.begin();
+    gWifiOn = true;
+    Serial.printf("[WiFi] up: http://%s/  (http://vesctuner.local/)\n", gWifiIp.c_str());
+    return true;
+}
+
+static void wifiDisconnect() {
+    if (!gWifiOn) return;
+    gWeb.stop(); MDNS.end(); WiFi.disconnect(true); WiFi.mode(WIFI_OFF);
+    gWifiOn = false; gWifiIp = "";
+    Serial.println("[WiFi] off");
+}
+
+// WIFI screen (gScreen 10) — status + how-to
+static void drawWifi() {
+    canvas.fillScreen(C_BG);
+    uiStatBar("WIFI", gWifiOn ? "ON" : "OFF", gWifiOn ? C_OK : C_DGREY, gWifiIp.c_str());
+    uiTitle("WiFi LAN server", gWifiOn ? "LIVE" : nullptr, C_OK);
+    canvas.setTextSize(1); canvas.setTextDatum(TL_DATUM);
+    int y = 32;
+    if (gWifiOn) {
+        canvas.setTextColor(C_OK);    canvas.drawString("Connected", 6, y); y += 14;
+        char l[48];
+        canvas.setTextColor(C_GREY);  snprintf(l, sizeof(l), "SSID: %s", gWifiSsid.c_str()); canvas.drawString(l, 6, y); y += 12;
+        canvas.setTextColor(C_VOLT);  snprintf(l, sizeof(l), "http://%s/", gWifiIp.c_str());  canvas.drawString(l, 6, y); y += 12;
+        canvas.setTextColor(C_CYAN);  canvas.drawString("http://vesctuner.local/", 6, y);     y += 16;
+        canvas.setTextColor(C_GREY);  canvas.drawString("[W] reconnect   [X] turn off", 6, y);
+    } else {
+        canvas.setTextColor(C_GREY);
+        canvas.drawString("Put credentials on SD card:", 6, y); y += 14;
+        canvas.setTextColor(C_WHITE);
+        canvas.drawString("/wifi.txt  line1=SSID  line2=pass", 6, y); y += 16;
+        canvas.setTextColor(C_VOLT);
+        canvas.drawString("[W] connect to home WiFi", 6, y); y += 14;
+        canvas.setTextColor(C_DGREY);
+        canvas.drawString("then browse vesctuner.local", 6, y);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2298,6 +2521,8 @@ void setup() {
 void loop() {
     M5Cardputer.update();
     handleKeys();
+
+    if (gWifiOn) gWeb.handleClient();   // serve LAN requests (download / live)
 
     uint32_t now = millis();
 

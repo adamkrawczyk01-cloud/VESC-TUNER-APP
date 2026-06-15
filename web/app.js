@@ -330,7 +330,10 @@ function render(v){
   if(!D && !['live'].includes(v)){ $('#main').innerHTML='<div class="empty">No session loaded — drop a CSV or click “Load session CSV”.</div>'; return; }
   (VIEWS[v]||viewOverview)();
 }
-function switchView(v){ VIEW=v; document.querySelectorAll('.navitem').forEach(b=>b.classList.toggle('active',b.dataset.v===v)); render(v); }
+function switchView(v){
+  if(v!=='live' && typeof liveDisconnect==='function') liveDisconnect();
+  VIEW=v; document.querySelectorAll('.navitem').forEach(b=>b.classList.toggle('active',b.dataset.v===v)); render(v);
+}
 document.querySelectorAll('.navitem').forEach(b=> b.onclick=()=>switchView(b.dataset.v));
 $('#load').onclick=()=>$('#file').click();
 $('#file').onchange=e=>{ const f=e.target.files[0]; if(f){ const r=new FileReader(); r.onload=()=>loadCSV(r.result,f.name); r.readAsText(f); } };

@@ -278,10 +278,11 @@ function buildReport(){
 }
 
 /* ============================================================
-   LIVE — WebSocket telemetry from the Cardputer (ws://host/live)
-   Device sends JSON frames of numeric fields; we plot a rolling window.
+   LIVE — HTTP polling of the Cardputer LAN server (/api/live)
+   The device runs a sync WebServer (no WebSocket); we poll JSON at
+   ~5Hz and plot a rolling window. CORS is open on the device.
    ============================================================ */
-let LIVE = { ws:null, buf:{}, t0:null, max:600, host:localStorage.getItem('vesc_host')||'vesctuner.local' };
+let LIVE = { timer:null, buf:{}, t0:null, max:600, ms:200, host:localStorage.getItem('vesc_host')||'vesctuner.local' };
 const LIVE_FIELDS = [
   {key:'speed', label:'speed km/h', color:C.warning},
   {key:'duty',  label:'duty %',     color:C.highlight, scale:'y2'},
@@ -302,8 +303,8 @@ function viewLive(){
     status);
   m.append(bar);
   const note=el('div','hint'); note.style.margin='0 2px 10px';
-  note.innerHTML='Connects to <span class="mono">ws://&lt;host&gt;/live</span> served by the Cardputer on your home WiFi. '+
-    'Tip: open this dashboard over <b>http</b> (the device hosts it) — browsers block ws:// from an https page.';
+  note.innerHTML='Polls <span class="mono">http://&lt;host&gt;/api/live</span> on the Cardputer (home WiFi). '+
+    'Open this dashboard over <b>http</b> (not the https GitHub Pages copy) — browsers block http requests from an https page.';
   m.append(note);
 
   // live gauges
@@ -323,20 +324,25 @@ function renderLiveChart(){
   // reuse plot() by faking a dataset-independent call
   plot(host, 'Live telemetry', xs, lines, 220);
 }
+function liveBase(){ const h=LIVE.host.replace(/^https?:\/\//,'').replace(/\/$/,''); return `http://${h}`; }
 function liveConnect(){
   liveDisconnect();
   LIVE.buf={t:[]}; LIVE.t0=null; LIVE_FIELDS.forEach(f=>LIVE.buf[f.key]=[]);
-  let url;
-  try { url = (LIVE.host.startsWith('ws')?LIVE.host:`ws://${LIVE.host}/live`); } catch(e){ return; }
   const setS=(t,c)=>{ const s=$('#live-status'); if(s){ s.textContent=t; s.style.color=c||''; } };
+  let misses=0;
+  const poll=async()=>{
+    try{
+      const r=await fetch(liveBase()+'/api/live',{cache:'no-store'});
+      const f=await r.json(); misses=0;
+      setS(f.ble?'● live · BLE ok':'● live · no BLE', f.ble?C.gps:C.warning);
+      liveFrame(f);
+    }catch(e){ if(++misses>3) setS('offline — host reachable?', C.error); }
+  };
   setS('connecting…', C.highlight);
-  try { LIVE.ws=new WebSocket(url); } catch(e){ setS('bad address', C.error); return; }
-  LIVE.ws.onopen=()=>setS('● connected', C.gps);
-  LIVE.ws.onclose=()=>setS('disconnected', C.muted);
-  LIVE.ws.onerror=()=>setS('error — host reachable?', C.error);
-  LIVE.ws.onmessage=ev=>{ let f; try{ f=JSON.parse(ev.data); }catch(e){ return; } liveFrame(f); };
+  poll(); LIVE.timer=setInterval(poll, LIVE.ms);
 }
-function liveDisconnect(){ if(LIVE.ws){ try{LIVE.ws.close();}catch(e){} LIVE.ws=null; } }
+function liveDisconnect(){ if(LIVE.timer){ clearInterval(LIVE.timer); LIVE.timer=null; }
+  const s=$('#live-status'); if(s){ s.textContent='disconnected'; s.style.color=C.muted; } }
 function liveFrame(f){
   const now = f.t!=null ? f.t/1000 : (LIVE.buf.t.length?LIVE.buf.t[LIVE.buf.t.length-1]+0.1:0);
   if(LIVE.t0==null) LIVE.t0=now;
