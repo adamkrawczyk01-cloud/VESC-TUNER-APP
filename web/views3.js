@@ -394,11 +394,42 @@ function viewMap(){
   );
   m.append(g);
 
-  // canvas route
-  const card=el('div','chart-card'); const cv=el('canvas','mapcanvas'); card.append(cv); m.append(card);
-  drawRoute(cv, pts);
+  if (typeof L !== 'undefined') {
+    const card=el('div','chart-card'); const mapDiv=el('div'); mapDiv.id='leafmap'; card.append(mapDiv); m.append(card);
+    const note=el('div','hint'); note.style.margin='4px 2px 0'; note.textContent='© OpenStreetMap · colour = speed (cyan slow → red fast)'; m.append(note);
+    // Leaflet needs the container in the DOM and sized before init
+    setTimeout(()=>drawLeafletRoute(mapDiv, pts), 0);
+  } else {
+    const card=el('div','chart-card'); const cv=el('canvas','mapcanvas'); card.append(cv); m.append(card);
+    drawRoute(cv, pts);   // offline / no Leaflet → plain canvas track
+  }
   // altitude over time
   if(alt) makeChart(m,'Altitude (m)',[{label:'alt',col:'altitude_m',color:C.teal,dec:0}],150);
+}
+let LEAFMAP = null;
+function leafmapStop(){ if(LEAFMAP){ try{ LEAFMAP.remove(); }catch(e){} LEAFMAP=null; } }
+function drawLeafletRoute(div, pts){
+  if (LEAFMAP) { try{ LEAFMAP.remove(); }catch(e){} LEAFMAP=null; }
+  const map = L.map(div, { zoomControl:true, attributionControl:false });
+  LEAFMAP = map;
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom:19 }).addTo(map);
+  // downsample for performance on mobile, keep continuity
+  const step = Math.max(1, Math.ceil(pts.length/2500));
+  const ds=[]; for(let i=0;i<pts.length;i+=step) ds.push(pts[i]); if(ds[ds.length-1]!==pts[pts.length-1]) ds.push(pts[pts.length-1]);
+  const spMax=Math.max(1,...ds.map(p=>p.sp));
+  // draw contiguous runs sharing a speed bucket → few polylines, gradient feel
+  let run=[ds[0]], bucket=Math.round((ds[0].sp/spMax)*6);
+  const flush=(b)=>{ if(run.length<2) return; const frac=b/6;
+    L.polyline(run.map(p=>[p.lat,p.lon]), {color:`hsl(${190*(1-frac)},85%,52%)`, weight:4, opacity:.9}).addTo(map); };
+  for(let i=1;i<ds.length;i++){ const b=Math.round((ds[i].sp/spMax)*6);
+    run.push(ds[i]); if(b!==bucket){ flush(bucket); run=[ds[i]]; bucket=b; } }
+  flush(bucket);
+  const A=pts[0], B=pts[pts.length-1];
+  L.circleMarker([A.lat,A.lon], {radius:6,color:C.gps,fillColor:C.gps,fillOpacity:1}).addTo(map).bindTooltip('start');
+  L.circleMarker([B.lat,B.lon], {radius:6,color:C.error,fillColor:C.error,fillOpacity:1}).addTo(map).bindTooltip('end');
+  const lats=pts.map(p=>p.lat), lons=pts.map(p=>p.lon);
+  map.fitBounds([[Math.min(...lats),Math.min(...lons)],[Math.max(...lats),Math.max(...lons)]], {padding:[20,20]});
+  setTimeout(()=>map.invalidateSize(), 60);
 }
 function drawRoute(cv, pts){
   const W=cv.parentElement.clientWidth-28, Hh=360;

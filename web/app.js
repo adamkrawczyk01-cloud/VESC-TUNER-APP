@@ -499,6 +499,7 @@ function render(v){
 function switchView(v){
   if(v!=='live' && typeof liveDisconnect==='function') liveDisconnect();
   if(v!=='replay' && typeof replayStop==='function') replayStop();
+  if(v!=='map' && typeof leafmapStop==='function') leafmapStop();
   VIEW=v; document.querySelectorAll('.navitem').forEach(b=>b.classList.toggle('active',b.dataset.v===v)); render(v);
 }
 document.querySelectorAll('.navitem').forEach(b=> b.onclick=()=>switchView(b.dataset.v));
