@@ -48,7 +48,21 @@ function syncToolButtons(){
   applyTheme(THEME); syncToolButtons();
 })();
 
-/* ---------- PWA service worker ---------- */
+/* ---------- PWA: service worker + install prompt ---------- */
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', ()=> navigator.serviceWorker.register('sw.js').catch(()=>{}));
 }
+let DEFERRED_INSTALL = null;
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault(); DEFERRED_INSTALL = e;
+  const b=$('#t-install'); if(b) b.hidden = false;
+});
+window.addEventListener('appinstalled', ()=>{ const b=$('#t-install'); if(b) b.hidden = true; DEFERRED_INSTALL=null; });
+(function wireInstall(){
+  const b=$('#t-install'); if(!b) return;
+  // already running as an installed app? keep it hidden
+  if (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) b.hidden = true;
+  b.onclick = async ()=>{ if(!DEFERRED_INSTALL) return;
+    DEFERRED_INSTALL.prompt(); try{ await DEFERRED_INSTALL.userChoice; }catch(e){}
+    DEFERRED_INSTALL=null; b.hidden=true; };
+})();

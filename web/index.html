@@ -6,6 +6,11 @@
 <title>VESC Tuner · Dashboard</title>
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#0f172a">
+<link rel="icon" type="image/png" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="VESC Tuner">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.min.css">
 <link rel="stylesheet" href="styles.css">
 </head>
@@ -49,6 +54,7 @@
         <button class="toolbtn" id="t-png" title="Export visible charts as PNG">⇩ PNG</button>
         <button class="toolbtn" id="t-clr" title="Clear annotation markers">⌫ Marks</button>
       </div>
+      <button class="loadbtn" id="t-install" hidden style="margin-bottom:8px">⬇ Install app</button>
       <span class="navlbl" style="padding-left:14px">IMPORT</span>
       <div class="imports">
         <button class="loadbtn" id="imp-card">↑ Cardputer CSV</button>
