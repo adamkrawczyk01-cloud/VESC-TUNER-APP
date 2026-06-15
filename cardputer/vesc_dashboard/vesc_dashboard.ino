@@ -155,6 +155,8 @@ struct VescVals {
     float roll      = 0, setpoint  = 0;   // Refloat GET_ALLDATA (float boards)
     float adc1      = 0, adc2      = 0;   // footpad sensors (~0..1)
     float atr_set   = 0, torque_tilt = 0, turn_tilt = 0;  // tilt contributions (°)
+    float brake_tilt = 0, remote_tilt = 0; // SP-BrkTlt, SP-Remote setpoint contributions (°)
+    float req_amps  = 0;                  // balance/requested current from Refloat (A)
     float booster   = 0, foc_id    = 0;   // booster current (A), id current (A)
     float id        = 0, iq        = 0;   // FOC d/q axis currents (A)
     float watt_hours = 0, wh_charged = 0, ah_charged = 0;  // energy counters
@@ -469,10 +471,13 @@ static void parseAllData(const uint8_t* p, int len) {
     gV.state       = p[10] & 0x0F;
     gV.adc1        = p[12] / 50.f;
     gV.adc2        = p[13] / 50.f;
+    gV.req_amps    = rdI16(p, 4) / 10.f;   // balance_current = requested amps
     gV.setpoint    = ((int)p[14] - 128) / 5.f;
     gV.atr_set     = ((int)p[15] - 128) / 5.f;
+    gV.brake_tilt  = ((int)p[16] - 128) / 5.f;
     gV.torque_tilt = ((int)p[17] - 128) / 5.f;
     gV.turn_tilt   = ((int)p[18] - 128) / 5.f;
+    gV.remote_tilt = ((int)p[19] - 128) / 5.f;
     gV.pitch       = rdI16(p, 20) / 10.f;
     gV.booster     = (int)p[22] - 128;
     if (len > 34) { int f = p[34]; gV.foc_id = (f == 222) ? 0 : f / 3.f; }
@@ -1068,8 +1073,8 @@ static void csvWriteHeader() {
     File f = SD.open(path, FILE_WRITE);
     if (!f) return;
     f.print("ts_ms,speed_kmh,rpm,voltage_V,vcell_V,curr_in_A,curr_mot_A,power_W,duty_pct,");
-    f.print("temp_fet_C,temp_mot_C,temp_bat_C,pitch_deg,roll_deg,setpoint_deg,atr_deg,torquetilt_deg,turntilt_deg,");
-    f.print("adc1,adc2,booster_A,foc_id_A,state,amp_hours,tacho,");
+    f.print("temp_fet_C,temp_mot_C,temp_bat_C,pitch_deg,roll_deg,setpoint_deg,atr_deg,torquetilt_deg,turntilt_deg,braketilt_deg,remotetilt_deg,");
+    f.print("adc1,adc2,booster_A,foc_id_A,req_amps_A,state,amp_hours,tacho,");
     f.print("id_A,iq_A,watt_hours,wh_charged,ah_charged,tacho_abs,fault,");
     f.print("batt_pct,odo_km,batt_wh,yaw,acc_x,acc_y,acc_z,gyro_x,gyro_y,gyro_z,");
     f.print("bms_v_tot,bms_i_in,cell_min,cell_max,cell_delta_mV");
@@ -1095,11 +1100,12 @@ static void csvAppend() {
     f.printf("%lu,%.2f,%.0f,%.2f,%.3f,%.2f,%.2f,%.0f,%.1f,",
              (unsigned long)millis(), gV.speed_kmh, gV.rpm, gV.voltage, vcell,
              gV.curr_in, gV.curr_mot, power, gV.duty_pct);
-    f.printf("%.1f,%.1f,%.1f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,",
+    f.printf("%.1f,%.1f,%.1f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,",
              gV.temp_fet, gV.temp_mot, gV.bms ? gV.temp_bat : 0.f,
-             gV.pitch, gV.roll, gV.setpoint, gV.atr_set, gV.torque_tilt, gV.turn_tilt);
-    f.printf("%.3f,%.3f,%.1f,%.1f,%d,%.4f,%ld,",
-             gV.adc1, gV.adc2, gV.booster, gV.foc_id, gV.state, gV.amp_hours, (long)gV.tacho);
+             gV.pitch, gV.roll, gV.setpoint, gV.atr_set, gV.torque_tilt, gV.turn_tilt,
+             gV.brake_tilt, gV.remote_tilt);
+    f.printf("%.3f,%.3f,%.1f,%.1f,%.2f,%d,%.4f,%ld,",
+             gV.adc1, gV.adc2, gV.booster, gV.foc_id, gV.req_amps, gV.state, gV.amp_hours, (long)gV.tacho);
     f.printf("%.2f,%.2f,%.4f,%.4f,%.4f,%ld,%d,",
              gV.id, gV.iq, gV.watt_hours, gV.wh_charged, gV.ah_charged, (long)gV.tacho_abs, gV.fault);
     f.printf("%.1f,%.2f,%.0f,%.1f,%.3f,%.3f,%.3f,%.2f,%.2f,%.2f,",
