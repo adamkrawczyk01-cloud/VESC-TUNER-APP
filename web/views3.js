@@ -157,6 +157,10 @@ function viewMotor(){
     {label:'id (flux)',col:'id_A',color:C.target,dec:1},
     {label:'motor A',col:'curr_mot_A',color:C.muted,dec:1},
   ],160);
+  if(has('req_amps_A')) makeChart(m,'Requested vs delivered current',[
+    {label:'requested A',col:'req_amps_A',color:C.highlight,dec:1},
+    {label:'motor A',col:'curr_mot_A',color:C.bran,dec:1},
+  ],150);
   makeChart(m,'RPM / duty',[
     {label:'erpm',col:'rpm',color:C.wheel,dec:0},
     {label:'duty %',col:'duty_pct',color:C.highlight,scale:'y2',dec:0},
@@ -359,8 +363,73 @@ function trendRow(parent, label, vals, color, dec){
   parent.append(wrap);
 }
 
+/* ============================================================
+   MAP / GPS (#5 geo) — from Float Control imports (lat/long/altitude)
+   ============================================================ */
+function haversine(a, b){
+  const R=6371000, toR=Math.PI/180;
+  const dLat=(b.lat-a.lat)*toR, dLon=(b.lon-a.lon)*toR;
+  const la1=a.lat*toR, la2=b.lat*toR;
+  const h=Math.sin(dLat/2)**2 + Math.cos(la1)*Math.cos(la2)*Math.sin(dLon/2)**2;
+  return 2*R*Math.asin(Math.sqrt(h));
+}
+function viewMap(){
+  const m=clearMain(); topbar(m,'Map / GPS','route coloured by speed · from Float Control imports');
+  if(!has('gps_lat')||!has('gps_lon')){
+    const e=el('div','empty'); e.innerHTML='No GPS in this session.<br>Import a Float Control ride (it carries lat/long + altitude).'; m.append(e); return;
+  }
+  const lat=D.col.gps_lat, lon=D.col.gps_lon, sp=D.col.speed_kmh||[];
+  const pts=[]; for(let i=0;i<D.n;i++){ if(lat[i]!=null&&lon[i]!=null&&Math.abs(lat[i])>0.0001) pts.push({lat:lat[i],lon:lon[i],sp:sp[i]||0}); }
+  // GPS distance + climb KPIs
+  let gdist=0; for(let i=1;i<pts.length;i++) gdist+=haversine(pts[i-1],pts[i]);
+  let climb=0, alt=D.col.altitude_m;
+  if(alt){ for(let i=1;i<D.n;i++){ if(alt[i]!=null&&alt[i-1]!=null){ const d=alt[i]-alt[i-1]; if(d>0) climb+=d; } } }
+  sectionTitle(m,'Route');
+  const g=el('div','kpis');
+  g.append(
+    kpi('GPS points', String(pts.length),''),
+    kpi('GPS distance', (gdist/1000).toFixed(2),'km', 'haversine', C.gps),
+    kpi('Total climb', alt?climb.toFixed(0):'–','m', alt?'sum of ascents':'no altitude', C.teal),
+    kpi('Max altitude', alt?mx('altitude_m').toFixed(0):'–','m'),
+  );
+  m.append(g);
+
+  // canvas route
+  const card=el('div','chart-card'); const cv=el('canvas','mapcanvas'); card.append(cv); m.append(card);
+  drawRoute(cv, pts);
+  // altitude over time
+  if(alt) makeChart(m,'Altitude (m)',[{label:'alt',col:'altitude_m',color:C.teal,dec:0}],150);
+}
+function drawRoute(cv, pts){
+  const W=cv.parentElement.clientWidth-28, Hh=360;
+  const dpr=window.devicePixelRatio||1;
+  cv.width=W*dpr; cv.height=Hh*dpr; cv.style.width=W+'px'; cv.style.height=Hh+'px';
+  const ctx=cv.getContext('2d'); ctx.scale(dpr,dpr);
+  if(pts.length<2){ ctx.fillStyle=C.muted; ctx.font='13px -apple-system'; ctx.fillText('Not enough GPS points',12,24); return; }
+  let latMn=Infinity,latMx=-Infinity,lonMn=Infinity,lonMx=-Infinity;
+  for(const p of pts){ if(p.lat<latMn)latMn=p.lat; if(p.lat>latMx)latMx=p.lat; if(p.lon<lonMn)lonMn=p.lon; if(p.lon>lonMx)lonMx=p.lon; }
+  const latMid=(latMn+latMx)/2, kx=Math.cos(latMid*Math.PI/180);   // lon compressed by latitude
+  const pad=24;
+  const spanLon=Math.max(1e-9,(lonMx-lonMn)*kx), spanLat=Math.max(1e-9,(latMx-latMn));
+  const sc=Math.min((W-2*pad)/spanLon, (Hh-2*pad)/spanLat);
+  const ox=(W-spanLon*sc)/2, oy=(Hh-spanLat*sc)/2;
+  const X=p=>ox+((p.lon-lonMn)*kx)*sc, Y=p=>Hh-(oy+((p.lat-latMn))*sc);  // flip Y (north up)
+  const spMax=Math.max(1,...pts.map(p=>p.sp));
+  ctx.lineWidth=3; ctx.lineCap='round'; ctx.lineJoin='round';
+  for(let i=1;i<pts.length;i++){ const frac=pts[i].sp/spMax;
+    ctx.strokeStyle=`hsl(${190*(1-frac)},85%,55%)`;   // cyan(slow) -> red(fast)
+    ctx.beginPath(); ctx.moveTo(X(pts[i-1]),Y(pts[i-1])); ctx.lineTo(X(pts[i]),Y(pts[i])); ctx.stroke();
+  }
+  // start / end markers
+  ctx.fillStyle=C.gps; ctx.beginPath(); ctx.arc(X(pts[0]),Y(pts[0]),5,0,7); ctx.fill();
+  ctx.fillStyle=C.error; ctx.beginPath(); ctx.arc(X(pts[pts.length-1]),Y(pts[pts.length-1]),5,0,7); ctx.fill();
+  ctx.fillStyle=C.text2; ctx.font='11px -apple-system';
+  ctx.fillText('● start', 12, Hh-22); ctx.fillStyle=C.error; ctx.fillText('● end', 70, Hh-22);
+  ctx.fillStyle=C.muted; ctx.fillText('colour = speed (cyan slow → red fast)', 12, Hh-8);
+}
+
 /* register */
 Object.assign(VIEWS, {
-  histograms:viewHistograms, segments:viewSegments, efficiency:viewEfficiency,
+  histograms:viewHistograms, segments:viewSegments, efficiency:viewEfficiency, map:viewMap,
   motor:viewMotor, faults:viewFaults, stats:viewStats, replay:viewReplay, history:viewHistory,
 });

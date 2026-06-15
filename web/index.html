@@ -31,6 +31,7 @@
         <button class="navitem" data-v="histograms"><span class="dot" style="background:var(--target)"></span>Histograms</button>
         <button class="navitem" data-v="segments"><span class="dot" style="background:var(--warning)"></span>Segments</button>
         <button class="navitem" data-v="efficiency"><span class="dot" style="background:var(--teal)"></span>Efficiency</button>
+        <button class="navitem" data-v="map"><span class="dot" style="background:var(--gps)"></span>Map / GPS</button>
         <button class="navitem" data-v="motor"><span class="dot" style="background:var(--bran)"></span>Motor / FOC</button>
         <button class="navitem" data-v="faults"><span class="dot" style="background:var(--error)"></span>Faults</button>
         <button class="navitem" data-v="stats"><span class="dot" style="background:var(--gps)"></span>Statistics</button>
@@ -48,8 +49,13 @@
         <button class="toolbtn" id="t-png" title="Export visible charts as PNG">⇩ PNG</button>
         <button class="toolbtn" id="t-clr" title="Clear annotation markers">⌫ Marks</button>
       </div>
-      <button class="loadbtn" id="load">↑ Load session CSV</button>
-      <input type="file" id="file" accept=".csv" hidden>
+      <span class="navlbl" style="padding-left:14px">IMPORT</span>
+      <div class="imports">
+        <button class="loadbtn" id="imp-card">↑ Cardputer CSV</button>
+        <button class="loadbtn" id="imp-fc">↑ Float Control</button>
+        <button class="loadbtn" id="imp-floaty" disabled title="No sample data yet — coming later">↑ Floaty (soon)</button>
+      </div>
+      <input type="file" id="file" accept=".csv,.txt" hidden>
     </aside>
 
     <main class="main" id="main"></main>

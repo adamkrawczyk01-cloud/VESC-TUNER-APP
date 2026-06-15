@@ -49,14 +49,80 @@ function parseCSV(text, name) {
   const t0 = col.ts_ms ? col.ts_ms[0] : 0;
   const t = (col.ts_ms || rows.map((_, i) => i * 83)).map(v => (v - t0) / 1000);
   const cells = fields.filter(f => /^cell_\d+$/.test(f) && col[f].some(v => v != null));
-  return { name: (name || 'session').replace('.csv',''), n: rows.length, fields, col, t, cells };
+  return { name: (name || 'session').replace('.csv',''), n: rows.length, fields, col, t, cells, source:'cardputer' };
 }
-function loadCSV(text, name) {
-  const d = parseCSV(text, name);
-  if (!d) return;
-  d.csvText = text;              // kept for History (IndexedDB) save
-  D = d; renderSidebar(); render(VIEW);
+/* ---------- import: detect source + adapt foreign formats ---------- */
+// Float Control column -> internal column (+ optional transform). FC "SP-Carve"
+// maps to our turn_tilt (carving = turn tilt). GPS/altitude/true-pitch pass through.
+const FC_MAP = {
+  'Time(s)':        {to:'ts_ms', fn:v=>v==null?null:Math.round(v*1000)},
+  'Speed(km/h)':    {to:'speed_kmh'},
+  'Duty%':          {to:'duty_pct', fn:v=>v==null?null:parseFloat(String(v))},  // "25%" -> 25
+  'Voltage':        {to:'voltage_V'},
+  'I-Battery':      {to:'curr_in_A'},
+  'I-Motor':        {to:'curr_mot_A'},
+  'I-FldWeak':      {to:'fldweak_A'},
+  'Requested Amps': {to:'req_amps_A'},
+  'Pitch':          {to:'pitch_deg'},
+  'Roll':           {to:'roll_deg'},
+  'Setpoint':       {to:'setpoint_deg'},
+  'SP-ATR':         {to:'atr_deg'},
+  'SP-Carve':       {to:'turntilt_deg'},
+  'SP-TrqTlt':      {to:'torquetilt_deg'},
+  'SP-BrkTlt':      {to:'braketilt_deg'},
+  'SP-Remote':      {to:'remotetilt_deg'},
+  'T-Mosfet':       {to:'temp_fet_C'},
+  'T-Mot':          {to:'temp_mot_C'},
+  'T-Batt':         {to:'temp_bat_C'},
+  'ADC1':           {to:'adc1'},
+  'ADC2':           {to:'adc2'},
+  'Motor-Fault':    {to:'fault'},
+  'Ah':             {to:'amp_hours'},
+  'Ah Charged':     {to:'ah_charged'},
+  'Wh':             {to:'watt_hours'},
+  'Wh Charged':     {to:'wh_charged'},
+  'ERPM':           {to:'rpm'},
+  'Distance(km)':   {to:'odo_km'},
+  'I-Booster':      {to:'booster_A'},
+  'True Pitch':     {to:'true_pitch_deg'},
+  'State(num)':     {to:'state'},
+  'Altitude(m)':    {to:'altitude_m'},
+  'GPS-Lat':        {to:'gps_lat'},
+  'GPS-Long':       {to:'gps_lon'},
+  'GPS-Accuracy':   {to:'gps_acc'},
+  'T-BMS':          {to:'bms_temp_01'},
+};
+function detectFormat(fields){
+  if(fields.includes('ts_ms')) return 'cardputer';
+  if(fields.includes('Time(s)') || fields.includes('Speed(km/h)') || fields.includes('Duty%')) return 'floatcontrol';
+  return 'cardputer';   // best-effort: try the native parser
 }
+function parseFloatControl(text, name){
+  const res = Papa.parse(text.trim(), { header:true, dynamicTyping:true, skipEmptyLines:true });
+  const rows = res.data; if(!rows.length) return null;
+  const active = res.meta.fields.filter(f => FC_MAP[f]);
+  const col = {};
+  for(const f of active){ const to=FC_MAP[f].to; if(!col[to]) col[to]=new Array(rows.length).fill(null); }
+  for(let i=0;i<rows.length;i++) for(const f of active){ const m=FC_MAP[f]; let v=rows[i][f];
+    if(v===''||v==null||v==='-') continue;
+    v = m.fn ? m.fn(v) : (typeof v==='number'?v:(isNaN(+v)?v:+v));
+    if(v==null||(typeof v==='number'&&isNaN(v))) continue;
+    col[m.to][i]=v;
+  }
+  if(col.voltage_V && col.curr_in_A){ col.power_W=new Array(rows.length).fill(null);
+    for(let i=0;i<rows.length;i++){ const V=col.voltage_V[i],I=col.curr_in_A[i]; if(V!=null&&I!=null) col.power_W[i]=V*I; } }
+  const t0 = col.ts_ms ? col.ts_ms[0] : 0;
+  const t = (col.ts_ms || rows.map((_,i)=>i*1000)).map(v=>(v-t0)/1000);
+  return { name:(name||'session').replace(/\.(csv|txt)$/i,''), n:rows.length, fields:Object.keys(col), col, t, cells:[], source:'floatcontrol' };
+}
+function importCSV(text, name, forced){
+  let fmt = forced;
+  if(!fmt){ const nl=text.indexOf('\n'); const head=(nl<0?text:text.slice(0,nl)).split(',').map(s=>s.trim()); fmt=detectFormat(head); }
+  const d = fmt==='floatcontrol' ? parseFloatControl(text,name) : parseCSV(text,name);
+  if(!d){ alert('Could not parse this file.'); return; }
+  d.csvText = text; D = d; renderSidebar(); render(VIEW);
+}
+function loadCSV(text, name) { importCSV(text, name); }   // auto-detect (drag-drop, sample, history)
 
 /* ---------- dataset-aware helpers ----------
    H(d) returns a helper bundle bound to dataset d. Existing views do
@@ -106,7 +172,9 @@ function renderSidebar() {
   if (!D) return;
   $('#sess-name').textContent = D.name;
   const h = H(D), dur = D.t[D.n-1] || 0;
+  const src = D.source==='floatcontrol' ? 'Float Control' : 'Cardputer';
   $('#sess-meta').innerHTML =
+    `<span class="srctag">${src}</span><br>` +
     `<b>${(dur/60).toFixed(1)}</b> min · <b>${D.n}</b> samples<br>` +
     `<b>${h.distanceKm().toFixed(2)}</b> km · <b>${D.fields.length}</b> channels`;
 }
@@ -216,9 +284,13 @@ function drawBands(u, bands){
   ctx.restore();
 }
 
+/* a column padded/truncated to exactly D.n (nulls if missing) — safe for uPlot */
+function colN(name){ const a=D.col[name];
+  if(a && a.length===D.n) return a;
+  const o=new Array(D.n).fill(null); if(a) for(let i=0;i<a.length&&i<D.n;i++) o[i]=a[i]; return o; }
 /* convenience: build lines from the ACTIVE dataset (legacy makeChart signature) */
 function makeChart(parent, title, defs, height=128, bands) {
-  const lines = defs.map(d => ({ ...d, xs:D.t, ys:D.col[d.col] || [] }));
+  const lines = defs.map(d => ({ ...d, xs:D.t, ys:colN(d.col) }));
   return plot(parent, title, D.t, lines, height, bands);
 }
 
@@ -356,12 +428,15 @@ function viewImu() {
   sectionTitle(m,'Charts');
   makeChart(m,'Pitch vs Setpoint',[
     {label:'pitch',col:'pitch_deg',color:C.wheel,dec:1},
+    {label:'true pitch',col:'true_pitch_deg',color:C.muted,dec:1},
     {label:'setpoint',col:'setpoint_deg',color:C.highlight,dec:1},
   ]);
-  makeChart(m,'Tilt contributions',[
+  makeChart(m,'Setpoint contributions (SP-*)',[
     {label:'ATR',col:'atr_deg',color:C.bran,dec:2},
     {label:'torque-tilt',col:'torquetilt_deg',color:C.target,dec:2},
     {label:'turn-tilt',col:'turntilt_deg',color:C.gps,dec:2},
+    {label:'brake-tilt',col:'braketilt_deg',color:C.warning,dec:2},
+    {label:'remote',col:'remotetilt_deg',color:C.highlight,dec:2},
   ]);
   makeChart(m,'Accelerometer (g)',[
     {label:'acc X',col:'acc_x',color:C.warning,dec:2},
@@ -427,8 +502,13 @@ function switchView(v){
   VIEW=v; document.querySelectorAll('.navitem').forEach(b=>b.classList.toggle('active',b.dataset.v===v)); render(v);
 }
 document.querySelectorAll('.navitem').forEach(b=> b.onclick=()=>switchView(b.dataset.v));
-$('#load').onclick=()=>$('#file').click();
-$('#file').onchange=e=>{ const f=e.target.files[0]; if(f){ const r=new FileReader(); r.onload=()=>loadCSV(r.result,f.name); r.readAsText(f); } };
+let IMPORT_SRC = null;   // which import button was clicked (forces the parser)
+const impCard=$('#imp-card'), impFc=$('#imp-fc');
+if(impCard) impCard.onclick=()=>{ IMPORT_SRC='cardputer';    $('#file').click(); };
+if(impFc)   impFc.onclick  =()=>{ IMPORT_SRC='floatcontrol'; $('#file').click(); };
+$('#file').onchange=e=>{ const f=e.target.files[0];
+  if(f){ const r=new FileReader(); r.onload=()=>importCSV(r.result,f.name,IMPORT_SRC); r.readAsText(f); }
+  e.target.value=''; IMPORT_SRC=null; };
 
 // drag & drop (active session)
 const dz=$('#drop');
