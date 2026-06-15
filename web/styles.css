@@ -106,3 +106,26 @@ nav{display:flex;flex-direction:column;gap:2px;padding:8px 10px}
 .u-axis{color:var(--muted)}
 .u-cursor-x,.u-cursor-y{border-color:var(--border)!important}
 .empty{color:var(--muted);font-size:13px;padding:40px;text-align:center}
+
+/* ---- compare / tuning / live toolbars ---- */
+.cmpbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+.loadbtn.sm{padding:7px 12px;font-size:12px}
+.loadbtn.ghost{background:none;border-color:var(--border);color:var(--text2)}
+.loadbtn.ghost:hover{border-color:var(--warning);color:var(--warning)}
+.tag{font-size:12px;font-weight:700;padding:6px 11px;border-radius:7px;background:var(--surface);
+  border:1px solid var(--border);color:var(--text2)}
+.tag.a{border-color:var(--bran);color:var(--bran-text)}
+.tag.b{border-color:var(--warning);color:var(--warning)}
+.hostinput{padding:8px 11px;border-radius:8px;border:1px solid var(--border);background:var(--surface);
+  color:var(--text);font-size:12.5px;font-family:inherit;width:200px}
+.hostinput:focus{outline:none;border-color:var(--bran)}
+
+/* ---- config / suggestions tables ---- */
+.cfgtable{width:100%;border-collapse:collapse;background:var(--surface);border:1px solid var(--border);
+  border-radius:10px;overflow:hidden;font-size:12.5px;margin-bottom:6px}
+.cfgtable th{text-align:left;padding:9px 13px;color:var(--muted);font-weight:700;font-size:11px;
+  text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--border);background:var(--surface-deep)}
+.cfgtable td{padding:8px 13px;border-bottom:1px solid var(--border);color:var(--text2)}
+.cfgtable tr:last-child td{border-bottom:none}
+.cfgtable .cell-ok{color:var(--gps);font-weight:600}
+.cfgtable .cell-bad{color:var(--error);font-weight:600}

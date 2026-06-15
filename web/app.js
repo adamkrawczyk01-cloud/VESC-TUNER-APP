@@ -1,14 +1,18 @@
 /* ============================================================
    VESC Tuner dashboard — load session CSV, visualise telemetry.
    Buildless: uPlot + PapaParse via CDN. Theme = VibeWheel tokens.
+   Core: parsing, dataset-aware helpers, chart factory, nav.
+   Extra views live in views2.js (compare / tuning / diag / live).
    ============================================================ */
 const C = {
   bran:'#06b6d4', wheel:'#38bdf8', gps:'#22c55e', target:'#a855f7',
   warning:'#f97316', error:'#ef4444', highlight:'#facc15', teal:'#14b8a6',
   text:'#f1f5f9', text2:'#94a3b8', muted:'#64748b', grid:'#1e293b', axis:'#334155',
 };
-const SYNC = uPlot.sync ? 'tuner' : 'tuner';
-let D = null;            // dataset
+const SYNC = 'tuner';
+let D = null;            // active dataset
+let CMP = null;          // comparison dataset (session B)
+let CFG = { mcconf:null, appconf:null, suggestions:null }; // tuning context
 let CHARTS = [];         // live uPlot instances (for resize)
 let VIEW = 'overview';
 
@@ -16,10 +20,10 @@ const $ = s => document.querySelector(s);
 const el = (t, c) => { const e = document.createElement(t); if (c) e.className = c; return e; };
 
 /* ---------- parsing ---------- */
-function loadCSV(text, name) {
+function parseCSV(text, name) {
   const res = Papa.parse(text.trim(), { header: true, dynamicTyping: true, skipEmptyLines: true });
   const rows = res.data;
-  if (!rows.length) return;
+  if (!rows.length) return null;
   const fields = res.meta.fields;
   const col = {};
   for (const f of fields) col[f] = new Array(rows.length);
@@ -27,31 +31,66 @@ function loadCSV(text, name) {
     for (const f of fields) { const v = rows[i][f]; col[f][i] = (v === '' || v == null) ? null : v; }
   const t0 = col.ts_ms ? col.ts_ms[0] : 0;
   const t = (col.ts_ms || rows.map((_, i) => i * 83)).map(v => (v - t0) / 1000);
-  // detect cell columns present
   const cells = fields.filter(f => /^cell_\d+$/.test(f) && col[f].some(v => v != null));
-  D = { name: name || 'session', n: rows.length, fields, col, t, cells };
-  renderSidebar(); render(VIEW);
+  return { name: (name || 'session').replace('.csv',''), n: rows.length, fields, col, t, cells };
+}
+function loadCSV(text, name) {
+  const d = parseCSV(text, name);
+  if (!d) return;
+  D = d; renderSidebar(); render(VIEW);
 }
 
-function has(c){ return D.col[c] && D.col[c].some(v => v != null); }
-function mx(c){ let m=-Infinity; for(const v of D.col[c]||[]) if(v!=null&&v>m) m=v; return m===-Infinity?0:m; }
-function mn(c){ let m= Infinity; for(const v of D.col[c]||[]) if(v!=null&&v<m) m=v; return m=== Infinity?0:m; }
-function last(c){ const a=D.col[c]||[]; for(let i=a.length-1;i>=0;i--) if(a[i]!=null) return a[i]; return 0; }
-function avg(c){ let s=0,n=0; for(const v of D.col[c]||[]) if(v!=null){s+=v;n++;} return n?s/n:0; }
-function distanceKm(){
-  if (has('odo_km')) { const d = last('odo_km') - (D.col.odo_km.find(v=>v!=null)||0); if (d>0) return d; }
-  let d=0; const s=D.col.speed_kmh, t=D.t;
-  for (let i=1;i<D.n;i++) if(s[i]!=null) d += s[i]*(t[i]-t[i-1])/3600;
-  return d;
+/* ---------- dataset-aware helpers ----------
+   H(d) returns a helper bundle bound to dataset d. Existing views do
+   `const {has,mx,mn,last,avg}=H(D)`; compare view uses H(CMP) too.     */
+function H(d){
+  const c = n => d.col[n] || [];
+  const has = n => d.col[n] && d.col[n].some(v => v != null);
+  const mx = n => { let m=-Infinity; for(const v of c(n)) if(v!=null&&v>m) m=v; return m===-Infinity?0:m; };
+  const mn = n => { let m= Infinity; for(const v of c(n)) if(v!=null&&v<m) m=v; return m=== Infinity?0:m; };
+  const last = n => { const a=c(n); for(let i=a.length-1;i>=0;i--) if(a[i]!=null) return a[i]; return 0; };
+  const avg = n => { let s=0,k=0; for(const v of c(n)) if(v!=null){s+=v;k++;} return k?s/k:0; };
+  const p = (n,q) => { const a=c(n).filter(v=>v!=null).sort((x,y)=>x-y); if(!a.length) return 0;
+    return a[Math.min(a.length-1, Math.floor(q*(a.length-1)))]; };
+  const distanceKm = () => {
+    if (has('odo_km')) { const first=c('odo_km').find(v=>v!=null)||0; const dd=last('odo_km')-first; if(dd>0) return dd; }
+    let dd=0; const s=c('speed_kmh'), t=d.t;
+    for (let i=1;i<d.n;i++) if(s[i]!=null) dd += s[i]*(t[i]-t[i-1])/3600;
+    return dd;
+  };
+  return { d, has, mx, mn, last, avg, p, distanceKm };
+}
+// convenience: top-level helpers bound to the ACTIVE dataset (legacy call sites)
+function has(c){ return H(D).has(c); }
+function mx(c){ return H(D).mx(c); }
+function mn(c){ return H(D).mn(c); }
+function last(c){ return H(D).last(c); }
+function avg(c){ return H(D).avg(c); }
+function distanceKm(){ return H(D).distanceKm(); }
+
+/* linear-interp a (times,values) series onto an arbitrary grid; null outside range */
+function resample(times, values, grid){
+  const out = new Array(grid.length).fill(null);
+  let j = 0;
+  for (let i=0;i<grid.length;i++){
+    const g = grid[i];
+    if (g < times[0] || g > times[times.length-1]) continue;
+    while (j < times.length-1 && times[j+1] < g) j++;
+    const t0=times[j], t1=times[j+1] ?? t0, v0=values[j], v1=values[j+1] ?? v0;
+    if (v0==null || v1==null) { out[i] = v0!=null?v0:v1; continue; }
+    out[i] = t1===t0 ? v0 : v0 + (v1-v0)*(g-t0)/(t1-t0);
+  }
+  return out;
 }
 
 /* ---------- sidebar ---------- */
 function renderSidebar() {
-  $('#sess-name').textContent = D.name.replace('.csv','');
-  const dur = D.t[D.n-1] || 0;
+  if (!D) return;
+  $('#sess-name').textContent = D.name;
+  const h = H(D), dur = D.t[D.n-1] || 0;
   $('#sess-meta').innerHTML =
     `<b>${(dur/60).toFixed(1)}</b> min · <b>${D.n}</b> samples<br>` +
-    `<b>${distanceKm().toFixed(2)}</b> km · <b>${D.fields.length}</b> channels`;
+    `<b>${h.distanceKm().toFixed(2)}</b> km · <b>${D.fields.length}</b> channels`;
 }
 
 /* ---------- chart factory ---------- */
@@ -67,39 +106,65 @@ function chartCard(parent, title) {
   return { body, leg };
 }
 
-function makeChart(parent, title, defs, height=128) {
+/* low-level: lines = [{label,color,xs,ys,scale,width,dec,dash}] sharing grid `xs0` */
+function plot(parent, title, xs0, lines, height=128, bands) {
   const { body, leg } = chartCard(parent, title);
-  const pills = defs.map(d => {
+  const pills = lines.map(d => {
     const lp=el('div','lp'), sw=el('span','sw'); sw.style.background=d.color;
+    if (d.dash) sw.style.opacity='.55';
     const tx=document.createElement('span'); tx.textContent=d.label;
     const b=document.createElement('b'); b.textContent='–';
     lp.append(sw,tx,b); leg.append(lp); return b;
   });
-  const data = [D.t, ...defs.map(d => D.col[d.col] || [])];
+  const data = [xs0, ...lines.map(d => d.ys)];
   const scales = { x:{ time:false } };
-  defs.forEach(d => scales[d.scale||'y'] = scales[d.scale||'y'] || {});
-  const series = [{}].concat(defs.map(d => ({
+  lines.forEach(d => scales[d.scale||'y'] = scales[d.scale||'y'] || {});
+  const series = [{}].concat(lines.map(d => ({
     label:d.label, stroke:d.color, width:d.width||1.5, scale:d.scale||'y',
-    points:{show:false}, spanGaps:true,
+    points:{show:false}, spanGaps:true, dash:d.dash?[4,4]:undefined,
   })));
   const axes = [ axX(), axY('y',3) ];
-  if (defs.some(d => (d.scale||'y')==='y2')) axes.push(axY('y2',1));
+  if (lines.some(d => (d.scale||'y')==='y2')) axes.push(axY('y2',1));
+  const hooks = { setCursor:[uu=>{ const i=uu.cursor.idx;
+    lines.forEach((d,k)=>{ pills[k].textContent=(i!=null&&d.ys&&d.ys[i]!=null)?(+d.ys[i]).toFixed(d.dec??1):'–'; });
+  }] };
+  if (bands && bands.length) hooks.draw = [uu => drawBands(uu, bands)];
   const u = new uPlot({
     width: parent.clientWidth-30, height, scales, series, axes, legend:{show:false},
     cursor:{ sync:{key:SYNC}, drag:{x:true,y:false}, points:{size:6} },
-    hooks:{ setCursor:[uu=>{ const i=uu.cursor.idx;
-      defs.forEach((d,k)=>{ const a=D.col[d.col]; pills[k].textContent=(i!=null&&a&&a[i]!=null)?(+a[i]).toFixed(d.dec??1):'–'; });
-    }] },
+    hooks,
   }, data, body);
   u._h = height;
   CHARTS.push(u);
   return u;
 }
 
-/* ---------- views ---------- */
+/* horizontal limit lines (e.g. l_current_max) drawn on scale y */
+function drawBands(u, bands){
+  const ctx = u.ctx; ctx.save();
+  for (const b of bands){
+    const sc = b.scale || 'y';
+    if (!u.scales[sc]) continue;
+    const y = u.valToPos(b.value, sc, true);
+    if (y < u.bbox.top || y > u.bbox.top + u.bbox.height) continue;
+    ctx.strokeStyle = b.color || C.error; ctx.lineWidth = 1; ctx.setLineDash([6,4]);
+    ctx.beginPath(); ctx.moveTo(u.bbox.left, y); ctx.lineTo(u.bbox.left+u.bbox.width, y); ctx.stroke();
+    ctx.setLineDash([]); ctx.fillStyle = b.color || C.error; ctx.font='10px -apple-system';
+    ctx.fillText(b.label||'', u.bbox.left+6, y-3);
+  }
+  ctx.restore();
+}
+
+/* convenience: build lines from the ACTIVE dataset (legacy makeChart signature) */
+function makeChart(parent, title, defs, height=128, bands) {
+  const lines = defs.map(d => ({ ...d, xs:D.t, ys:D.col[d.col] || [] }));
+  return plot(parent, title, D.t, lines, height, bands);
+}
+
+/* ---------- views (core 4) ---------- */
 function clearMain(){ CHARTS=[]; const m=$('#main'); m.innerHTML=''; return m; }
 function topbar(m, title, hint){ const t=el('div','topbar'); const h=el('h1'); h.textContent=title;
-  const s=el('div','hint'); s.textContent=hint||''; t.append(h,s); m.append(t); }
+  const s=el('div','hint'); s.textContent=hint||''; t.append(h,s); m.append(t); return t; }
 function sectionTitle(m, t){ const s=el('div','section-title'); s.textContent=t; m.append(s); }
 
 function kpi(label, value, unit, sub, color) {
@@ -130,7 +195,7 @@ function viewOverview() {
   );
   m.append(g);
   sectionTitle(m,'Auto-flags');
-  const flags=computeFlags();
+  const flags=computeFlags(D);
   const fc=el('div','flags');
   if(!flags.length){ const f=el('div','flag ok'); f.innerHTML=`<span class="ico">✓</span><div><div class="t">No issues detected</div><div class="d">duty, temps, balance and faults all nominal</div></div>`; fc.append(f); }
   flags.forEach(fl=>{ const f=el('div','flag sev-'+fl.sev); f.innerHTML=
@@ -141,6 +206,7 @@ function viewOverview() {
 
 function viewTimeline() {
   const m=clearMain(); topbar(m,'Timeline','drag to zoom · hover for values');
+  const lim = limitBands();
   makeChart(m,'Speed / Duty',[
     {label:'speed',col:'speed_kmh',color:C.warning,scale:'y',dec:1},
     {label:'duty %',col:'duty_pct',color:C.highlight,scale:'y2',dec:0},
@@ -149,12 +215,12 @@ function viewTimeline() {
     {label:'A in',col:'curr_in_A',color:C.wheel,dec:1},
     {label:'A motor',col:'curr_mot_A',color:C.bran,dec:1},
     {label:'kW',col:'power_W',color:C.target,scale:'y2',dec:0},
-  ]);
+  ],128, lim.current);
   makeChart(m,'Temperatures',[
     {label:'FET',col:'temp_fet_C',color:C.error,dec:1},
     {label:'motor',col:'temp_mot_C',color:C.warning,dec:1},
     {label:'batt',col:'temp_bat_C',color:C.highlight,dec:1},
-  ]);
+  ],128, lim.temp);
   makeChart(m,'Voltage',[
     {label:'pack V',col:'voltage_V',color:C.teal,dec:1},
     {label:'V/cell',col:'vcell_V',color:C.bran,scale:'y2',dec:3},
@@ -168,9 +234,7 @@ function viewTimeline() {
 
 function viewBattery() {
   const m=clearMain(); topbar(m,'Battery', `${D.cells.length}S · per-cell`);
-  // current cell snapshot (last sample)
   sectionTitle(m,'Cells (latest)');
-  const lo=mn('cell_min'), hi=mx('cell_max');
   const lastVals = D.cells.map(c=>last(c));
   const cmin=Math.min(...lastVals), cmax=Math.max(...lastVals);
   const grid=el('div','cellgrid');
@@ -184,7 +248,6 @@ function viewBattery() {
   });
   m.append(grid);
   sectionTitle(m,'Over time');
-  // cell voltage lines
   const cellDefs=D.cells.map((c,i)=>({label:'',col:c,color:`hsl(${190+i*7},70%,60%)`,width:1,dec:3}));
   makeChart(m,'Cell voltages', cellDefs, 150);
   makeChart(m,'Cell imbalance',[
@@ -225,39 +288,54 @@ function viewImu() {
   ]);
 }
 
-/* ---------- auto-flags ---------- */
-function firstWhen(pred){ for(let i=0;i<D.n;i++) if(pred(i)) return fmtTime(D.t[i]); return ''; }
-function countIf(pred){ let n=0; for(let i=0;i<D.n;i++) if(pred(i)) n++; return n; }
-function computeFlags() {
+/* limit lines from mcconf (used as chart bands when a config is loaded) */
+function limitBands(){
+  const mc = CFG.mcconf; if(!mc) return { current:null, temp:null };
+  const g = k => (mc[k] ?? mc[k?.toUpperCase?.()] );
+  const bands = { current:[], temp:[] };
+  const im = g('l_in_current_max'); if(im!=null) bands.current.push({value:+im, scale:'y', color:C.error, label:`l_in_current_max ${im}A`});
+  const tf = g('l_temp_fet_start'); if(tf!=null) bands.temp.push({value:+tf, scale:'y', color:C.warning, label:`fet_start ${tf}°`});
+  const te = g('l_temp_fet_end');   if(te!=null) bands.temp.push({value:+te, scale:'y', color:C.error, label:`fet_end ${te}°`});
+  return { current:bands.current.length?bands.current:null, temp:bands.temp.length?bands.temp:null };
+}
+
+/* ---------- auto-flags (dataset-aware) ---------- */
+function computeFlags(d) {
+  const h = H(d), col = d.col, t = d.t, n = d.n;
+  const firstWhen = pred => { for(let i=0;i<n;i++) if(pred(i)) return fmtTime(t[i]); return ''; };
+  const countIf = pred => { let k=0; for(let i=0;i<n;i++) if(pred(i)) k++; return k; };
   const f=[];
-  const duty=D.col.duty_pct, fet=D.col.temp_fet_C, delta=D.col.cell_delta_mV,
-        fault=D.col.fault, accz=D.col.acc_z, vmin=D.col.cell_min;
-  const dHi=countIf(i=>duty&&duty[i]>90);
-  if(dHi) f.push({sev:duty&&mx('duty_pct')>=96?'err':'warn',ico:'!',title:`Duty cycle over 90% (${dHi}×)`,
-    detail:`peak ${mx('duty_pct').toFixed(0)}% — approaching the limit`, when:firstWhen(i=>duty[i]>90)});
-  const fHot=countIf(i=>fet&&fet[i]>70);
-  if(fHot) f.push({sev:mx('temp_fet_C')>85?'err':'warn',ico:'▲',title:`Controller hot (max ${mx('temp_fet_C').toFixed(0)}°C)`,
-    detail:`${fHot} samples over 70°C — check thermal headroom / l_temp_fet`, when:firstWhen(i=>fet[i]>70)});
-  if(delta){ const dm=mx('cell_delta_mV'); if(dm>100) f.push({sev:dm>200?'err':'warn',ico:'≠',title:`Cell imbalance ${dm.toFixed(0)} mV`,
+  const duty=col.duty_pct, fet=col.temp_fet_C, delta=col.cell_delta_mV,
+        fault=col.fault, accz=col.acc_z, vmin=col.cell_min;
+  if(duty){ const dHi=countIf(i=>duty[i]>90);
+    if(dHi) f.push({sev:h.mx('duty_pct')>=96?'err':'warn',ico:'!',title:`Duty cycle over 90% (${dHi}×)`,
+      detail:`peak ${h.mx('duty_pct').toFixed(0)}% — approaching the limit`, when:firstWhen(i=>duty[i]>90)}); }
+  if(fet){ const fHot=countIf(i=>fet[i]>70);
+    if(fHot) f.push({sev:h.mx('temp_fet_C')>85?'err':'warn',ico:'▲',title:`Controller hot (max ${h.mx('temp_fet_C').toFixed(0)}°C)`,
+      detail:`${fHot} samples over 70°C — check thermal headroom / l_temp_fet`, when:firstWhen(i=>fet[i]>70)}); }
+  if(delta){ const dm=h.mx('cell_delta_mV'); if(dm>100) f.push({sev:dm>200?'err':'warn',ico:'≠',title:`Cell imbalance ${dm.toFixed(0)} mV`,
     detail:'pack drifting — consider a balance charge', when:firstWhen(i=>delta[i]>100)}); }
   if(fault){ const fc=countIf(i=>fault[i]>0); if(fc) f.push({sev:'err',ico:'✕',title:`Fault code raised`,
     detail:`mc_fault active in ${fc} samples`, when:firstWhen(i=>fault[i]>0)}); }
   if(accz){ const land=countIf(i=>accz[i]>2.2); if(land) f.push({sev:'info',ico:'↓',title:`${land} hard landing(s)`,
     detail:`acc Z spiked over 2.2g`, when:firstWhen(i=>accz[i]>2.2)}); }
-  if(vmin){ const lv=mn('cell_min'); if(lv>0&&lv<3.3) f.push({sev:'warn',ico:'▽',title:`Low cell ${lv.toFixed(3)} V`,
+  if(vmin){ const lv=h.mn('cell_min'); if(lv>0&&lv<3.3) f.push({sev:'warn',ico:'▽',title:`Low cell ${lv.toFixed(3)} V`,
     detail:'a cell dipped under 3.3V — reduce load / charge', when:firstWhen(i=>vmin[i]<3.3)}); }
   return f;
 }
 
 /* ---------- nav / wiring ---------- */
 const VIEWS={ overview:viewOverview, timeline:viewTimeline, battery:viewBattery, imu:viewImu };
-function render(v){ if(!D){ $('#main').innerHTML='<div class="empty">No session loaded — drop a CSV or click “Load session CSV”.</div>'; return; } (VIEWS[v]||viewOverview)(); }
+function render(v){
+  if(!D && !['live'].includes(v)){ $('#main').innerHTML='<div class="empty">No session loaded — drop a CSV or click “Load session CSV”.</div>'; return; }
+  (VIEWS[v]||viewOverview)();
+}
 function switchView(v){ VIEW=v; document.querySelectorAll('.navitem').forEach(b=>b.classList.toggle('active',b.dataset.v===v)); render(v); }
 document.querySelectorAll('.navitem').forEach(b=> b.onclick=()=>switchView(b.dataset.v));
 $('#load').onclick=()=>$('#file').click();
 $('#file').onchange=e=>{ const f=e.target.files[0]; if(f){ const r=new FileReader(); r.onload=()=>loadCSV(r.result,f.name); r.readAsText(f); } };
 
-// drag & drop
+// drag & drop (active session)
 const dz=$('#drop');
 window.addEventListener('dragover',e=>{ e.preventDefault(); dz.classList.add('on'); });
 window.addEventListener('dragleave',e=>{ if(e.relatedTarget===null) dz.classList.remove('on'); });
