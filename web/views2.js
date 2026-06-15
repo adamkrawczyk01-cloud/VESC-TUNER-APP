@@ -135,6 +135,54 @@ function viewDiag(){
     limStart!=null?{value:limStart,scale:'y',color:C.warning,label:`fet_start ${limStart}°`}:null,
     limEnd!=null?{value:limEnd,scale:'y',color:C.error,label:`fet_end ${limEnd}°`}:null,
   ].filter(Boolean):null);
+
+  /* ---- duty-cycle headroom (#9) ---- */
+  sectionTitle(m,'Duty-cycle headroom');
+  const duty=D.col.duty_pct||[];
+  const cnt=(p)=>{ let k=0; for(const v of duty) if(v!=null&&p(v)) k++; return k; };
+  const n90=cnt(v=>v>90), n95=cnt(v=>v>95), peak=h.mx('duty_pct');
+  const dg=el('div','kpis');
+  dg.append(
+    kpi('Peak duty', peak.toFixed(0),'%', null, peak>95?C.error:peak>90?C.warning:C.gps),
+    kpi('Headroom', (100-peak).toFixed(0),'%','to 100%', (100-peak)<5?C.error:C.text),
+    kpi('Time >90%', (n90/Math.max(1,D.n)*100).toFixed(1),'%', `${n90} samples`, n90?C.warning:C.gps),
+    kpi('Time >95%', (n95/Math.max(1,D.n)*100).toFixed(1),'%','spin-out risk', n95?C.error:C.gps),
+  );
+  m.append(dg);
+  const dnote=el('div','hint'); dnote.style.margin='0 2px 8px';
+  dnote.textContent = peak>95 ? 'Duty hit the ceiling — top speed is voltage-limited. More cells or lower load needed before pushing harder.'
+    : peak>90 ? 'Brushing the limit. Leave margin — high duty + load is where cut-outs happen.'
+    : 'Comfortable duty headroom for this ride.';
+  m.append(dnote);
+
+  /* ---- nosedive risk (#10): pitch lagging setpoint while duty/load is high ---- */
+  if(has('pitch_deg') && has('setpoint_deg')){
+    sectionTitle(m,'Nosedive risk');
+    const pit=D.col.pitch_deg, sp=D.col.setpoint_deg, vmin=h.mn('voltage_V');
+    let worst=0, worstT=0, riskN=0;
+    const errCol=new Array(D.n).fill(null);
+    for(let i=0;i<D.n;i++){ if(pit[i]==null||sp[i]==null) continue;
+      const err=sp[i]-pit[i];           // board asks for more nose-up than it has
+      errCol[i]=err;
+      const hot=(duty[i]||0)>80;
+      if(hot && err>2){ riskN++; if(err>worst){ worst=err; worstT=D.t[i]; } }
+    }
+    const ng=el('div','kpis');
+    ng.append(
+      kpi('Risk samples', String(riskN),'', 'duty>80% & lag>2°', riskN>5?C.error:riskN?C.warning:C.gps),
+      kpi('Worst lag', worst.toFixed(1),'°', riskN?('@'+fmtTime(worstT)):'none', worst>5?C.error:C.text),
+      kpi('Min voltage', vmin.toFixed(1),'V','under load', vmin<h.mx('voltage_V')*0.8?C.warning:C.text),
+    );
+    m.append(ng);
+    D.col.__pitcherr = errCol;   // ephemeral column for the chart
+    plot(m,'Setpoint − pitch (lag) vs duty', D.t, [
+      {label:'lag °',color:C.error,xs:D.t,ys:errCol,dec:1},
+      {label:'duty %',color:C.highlight,xs:D.t,ys:duty,scale:'y2',dec:0},
+    ],150);
+    const nn=el('div','hint'); nn.style.margin='6px 2px';
+    nn.textContent='Large positive lag while duty is high = the motor can’t hold the nose up. Sustained spikes here are the classic nosedive precursor.';
+    m.append(nn);
+  }
 }
 
 /* least-squares slope of y vs x over paired non-null samples */

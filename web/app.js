@@ -15,6 +15,23 @@ let CMP = null;          // comparison dataset (session B)
 let CFG = { mcconf:null, appconf:null, suggestions:null }; // tuning context
 let CHARTS = [];         // live uPlot instances (for resize)
 let VIEW = 'overview';
+let SMOOTH = { on:false, win:9 };                 // moving-average smoothing toggle
+let ANNOT = {};                                   // { sessionName: [{t,label}] }  persisted
+let THEME = localStorage.getItem('vesc_theme') || 'dark';
+try { ANNOT = JSON.parse(localStorage.getItem('vesc_annot')||'{}'); } catch(e){ ANNOT = {}; }
+
+/* moving average ignoring nulls (centred window) */
+function movavg(a, win){
+  if(!a || !SMOOTH.on) return a;
+  const w=Math.max(1,win|0), half=w>>1, out=new Array(a.length);
+  for(let i=0;i<a.length;i++){ let s=0,n=0;
+    for(let j=i-half;j<=i+half;j++){ const v=a[j]; if(v!=null&&!isNaN(v)){s+=v;n++;} }
+    out[i]= n? s/n : null;
+  }
+  return out;
+}
+function annotKey(){ return D ? D.name : '_'; }
+function saveAnnot(){ try{ localStorage.setItem('vesc_annot', JSON.stringify(ANNOT)); }catch(e){} }
 
 const $ = s => document.querySelector(s);
 const el = (t, c) => { const e = document.createElement(t); if (c) e.className = c; return e; };
@@ -37,6 +54,7 @@ function parseCSV(text, name) {
 function loadCSV(text, name) {
   const d = parseCSV(text, name);
   if (!d) return;
+  d.csvText = text;              // kept for History (IndexedDB) save
   D = d; renderSidebar(); render(VIEW);
 }
 
@@ -106,8 +124,9 @@ function chartCard(parent, title) {
   return { body, leg };
 }
 
-/* low-level: lines = [{label,color,xs,ys,scale,width,dec,dash}] sharing grid `xs0` */
-function plot(parent, title, xs0, lines, height=128, bands) {
+/* low-level: lines = [{label,color,xs,ys,scale,width,dec,dash}] sharing grid `xs0`.
+   opts.annot=false disables annotation markers (e.g. live/scatter charts).      */
+function plot(parent, title, xs0, lines, height=128, bands, opts={}) {
   const { body, leg } = chartCard(parent, title);
   const pills = lines.map(d => {
     const lp=el('div','lp'), sw=el('span','sw'); sw.style.background=d.color;
@@ -116,7 +135,10 @@ function plot(parent, title, xs0, lines, height=128, bands) {
     const b=document.createElement('b'); b.textContent='–';
     lp.append(sw,tx,b); leg.append(lp); return b;
   });
-  const data = [xs0, ...lines.map(d => d.ys)];
+  const selBox = el('div','selstats'); body.parentElement.append(selBox);
+  // smoothing applied to plotted values; raw kept for stats
+  const plotted = lines.map(d => movavg(d.ys, SMOOTH.win));
+  const data = [xs0, ...plotted];
   const scales = { x:{ time:false } };
   lines.forEach(d => scales[d.scale||'y'] = scales[d.scale||'y'] || {});
   const series = [{}].concat(lines.map(d => ({
@@ -125,18 +147,57 @@ function plot(parent, title, xs0, lines, height=128, bands) {
   })));
   const axes = [ axX(), axY('y',3) ];
   if (lines.some(d => (d.scale||'y')==='y2')) axes.push(axY('y2',1));
-  const hooks = { setCursor:[uu=>{ const i=uu.cursor.idx;
-    lines.forEach((d,k)=>{ pills[k].textContent=(i!=null&&d.ys&&d.ys[i]!=null)?(+d.ys[i]).toFixed(d.dec??1):'–'; });
-  }] };
-  if (bands && bands.length) hooks.draw = [uu => drawBands(uu, bands)];
+  const useAnnot = opts.annot !== false;
+  const hooks = {
+    setCursor:[uu=>{ const i=uu.cursor.idx;
+      lines.forEach((d,k)=>{ pills[k].textContent=(i!=null&&plotted[k]&&plotted[k][i]!=null)?(+plotted[k][i]).toFixed(d.dec??1):'–'; });
+    }],
+    setSelect:[uu=>{ selectionStats(uu, xs0, lines, selBox); }],
+    draw:[uu=>{ if(bands&&bands.length) drawBands(uu,bands); if(useAnnot) drawAnnotations(uu); }],
+  };
   const u = new uPlot({
     width: parent.clientWidth-30, height, scales, series, axes, legend:{show:false},
     cursor:{ sync:{key:SYNC}, drag:{x:true,y:false}, points:{size:6} },
     hooks,
   }, data, body);
-  u._h = height;
+  u._h = height; u._xs = xs0; u._raw = lines;
+  if (useAnnot) body.addEventListener('dblclick', e=>{
+    const rect=body.getBoundingClientRect();
+    const xv=u.posToVal(e.clientX-rect.left, 'x'); if(xv==null) return;
+    const label=prompt('Marker label @ '+fmtTime(xv)); if(label==null) return;
+    (ANNOT[annotKey()]=ANNOT[annotKey()]||[]).push({t:+xv.toFixed(2), label}); saveAnnot();
+    CHARTS.forEach(c=>c.redraw(false,false));
+  });
   CHARTS.push(u);
   return u;
+}
+
+/* window stats for a brushed selection (drag) — avg / min / max per line */
+function selectionStats(u, xs0, lines, box){
+  const sel=u.select; if(!sel || sel.width<3){ box.innerHTML=''; return; }
+  const x0=u.posToVal(sel.left,'x'), x1=u.posToVal(sel.left+sel.width,'x');
+  let i0=0,i1=xs0.length-1;
+  for(let i=0;i<xs0.length;i++){ if(xs0[i]>=x0){i0=i;break;} }
+  for(let i=xs0.length-1;i>=0;i--){ if(xs0[i]<=x1){i1=i;break;} }
+  const parts=[`<b>${fmtTime(x0)}–${fmtTime(x1)}</b> (${(x1-x0).toFixed(1)}s)`];
+  lines.forEach(d=>{ let s=0,n=0,mn=Infinity,mx=-Infinity;
+    for(let i=i0;i<=i1;i++){ const v=d.ys[i]; if(v==null||isNaN(v))continue; s+=v;n++; if(v<mn)mn=v; if(v>mx)mx=v; }
+    if(n) parts.push(`<span style="color:${d.color}">${d.label}</span> avg ${(s/n).toFixed(d.dec??1)} · ${mn.toFixed(d.dec??1)}–${mx.toFixed(d.dec??1)}`);
+  });
+  box.innerHTML = parts.join('&nbsp;&nbsp;');
+}
+
+/* vertical annotation markers for the active session */
+function drawAnnotations(u){
+  const arr=ANNOT[annotKey()]; if(!arr||!arr.length) return;
+  const ctx=u.ctx; ctx.save();
+  ctx.strokeStyle=C.target; ctx.fillStyle=C.target; ctx.lineWidth=1; ctx.font='10px -apple-system';
+  for(const a of arr){ const x=u.valToPos(a.t,'x',true);
+    if(x<u.bbox.left||x>u.bbox.left+u.bbox.width) continue;
+    ctx.setLineDash([3,3]); ctx.beginPath(); ctx.moveTo(x,u.bbox.top); ctx.lineTo(x,u.bbox.top+u.bbox.height); ctx.stroke();
+    ctx.setLineDash([]); ctx.fillText(a.label||'•', x+3, u.bbox.top+10);
+  }
+  ctx.restore();
 }
 
 /* horizontal limit lines (e.g. l_current_max) drawn on scale y */
@@ -263,6 +324,36 @@ function viewBattery() {
 
 function viewImu() {
   const m=clearMain(); topbar(m,'Balance / IMU','ride dynamics');
+
+  // ride-dynamics KPIs: lean + hard landings
+  sectionTitle(m,'Dynamics');
+  const g=el('div','kpis');
+  const leanMax=Math.max(Math.abs(mx('roll_deg')), Math.abs(mn('roll_deg')));
+  const gMax=mx('acc_z');
+  // collect landing events (acc_z spikes), ranked
+  const landings=[];
+  if(has('acc_z')){ const a=D.col.acc_z; let cool=0;
+    for(let i=0;i<D.n;i++){ if(a[i]!=null && a[i]>2.0 && cool<=0){ landings.push({t:D.t[i],g:a[i]}); cool=8; } if(cool>0)cool--; } }
+  landings.sort((x,y)=>y.g-x.g);
+  g.append(
+    kpi('Max lean', leanMax.toFixed(0),'°','roll', leanMax>40?C.warning:C.text),
+    kpi('Hard landings', String(landings.length),'', '>2.0 g', landings.length?C.warning:C.gps),
+    kpi('Peak impact', landings.length?landings[0].g.toFixed(2):gMax.toFixed(2),'g', landings.length?('@'+fmtTime(landings[0].t)):'', gMax>3?C.error:C.text),
+    kpi('Max gyro', Math.max(Math.abs(mx('gyro_z')),Math.abs(mn('gyro_z'))).toFixed(0),'°/s','yaw rate'),
+  );
+  m.append(g);
+  if(landings.length){
+    sectionTitle(m,'Hardest landings');
+    const tbl=el('table','cfgtable');
+    tbl.innerHTML='<tr><th>#</th><th>time</th><th>impact (g)</th></tr>';
+    landings.slice(0,8).forEach((l,i)=>{ const tr=el('tr');
+      tr.innerHTML=`<td class="mono">${i+1}</td><td class="mono">${fmtTime(l.t)}</td>`+
+        `<td class="num mono" style="color:${l.g>3?C.error:C.warning}">${l.g.toFixed(2)}</td>`;
+      tbl.append(tr); });
+    m.append(tbl);
+  }
+
+  sectionTitle(m,'Charts');
   makeChart(m,'Pitch vs Setpoint',[
     {label:'pitch',col:'pitch_deg',color:C.wheel,dec:1},
     {label:'setpoint',col:'setpoint_deg',color:C.highlight,dec:1},
@@ -327,11 +418,12 @@ function computeFlags(d) {
 /* ---------- nav / wiring ---------- */
 const VIEWS={ overview:viewOverview, timeline:viewTimeline, battery:viewBattery, imu:viewImu };
 function render(v){
-  if(!D && !['live'].includes(v)){ $('#main').innerHTML='<div class="empty">No session loaded — drop a CSV or click “Load session CSV”.</div>'; return; }
+  if(!D && !['live','history'].includes(v)){ $('#main').innerHTML='<div class="empty">No session loaded — drop a CSV or click “Load session CSV”.</div>'; return; }
   (VIEWS[v]||viewOverview)();
 }
 function switchView(v){
   if(v!=='live' && typeof liveDisconnect==='function') liveDisconnect();
+  if(v!=='replay' && typeof replayStop==='function') replayStop();
   VIEW=v; document.querySelectorAll('.navitem').forEach(b=>b.classList.toggle('active',b.dataset.v===v)); render(v);
 }
 document.querySelectorAll('.navitem').forEach(b=> b.onclick=()=>switchView(b.dataset.v));

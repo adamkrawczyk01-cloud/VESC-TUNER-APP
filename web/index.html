@@ -4,6 +4,8 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>VESC Tuner · Dashboard</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0f172a">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.min.css">
 <link rel="stylesheet" href="styles.css">
 </head>
@@ -26,11 +28,26 @@
         <button class="navitem" data-v="imu"><span class="dot" style="background:var(--target)"></span>Balance / IMU</button>
         <span class="navlbl">ANALYSIS</span>
         <button class="navitem" data-v="compare"><span class="dot" style="background:var(--wheel)"></span>Compare A/B</button>
+        <button class="navitem" data-v="histograms"><span class="dot" style="background:var(--target)"></span>Histograms</button>
+        <button class="navitem" data-v="segments"><span class="dot" style="background:var(--warning)"></span>Segments</button>
+        <button class="navitem" data-v="efficiency"><span class="dot" style="background:var(--teal)"></span>Efficiency</button>
+        <button class="navitem" data-v="motor"><span class="dot" style="background:var(--bran)"></span>Motor / FOC</button>
+        <button class="navitem" data-v="faults"><span class="dot" style="background:var(--error)"></span>Faults</button>
+        <button class="navitem" data-v="stats"><span class="dot" style="background:var(--gps)"></span>Statistics</button>
+        <span class="navlbl">TOOLS</span>
         <button class="navitem" data-v="diag"><span class="dot" style="background:var(--teal)"></span>Diagnostics</button>
         <button class="navitem" data-v="tuning"><span class="dot" style="background:var(--gps)"></span>Tuning loop</button>
+        <button class="navitem" data-v="replay"><span class="dot" style="background:var(--highlight)"></span>Replay</button>
+        <button class="navitem" data-v="history"><span class="dot" style="background:var(--wheel)"></span>History</button>
         <button class="navitem" data-v="live"><span class="dot" style="background:var(--error)"></span>Live</button>
       </nav>
       <div class="spacer"></div>
+      <div class="tools">
+        <button class="toolbtn" id="t-smooth" title="Moving-average smoothing">⌇ Smooth</button>
+        <button class="toolbtn" id="t-theme" title="Toggle light/dark">◐ Theme</button>
+        <button class="toolbtn" id="t-png" title="Export visible charts as PNG">⇩ PNG</button>
+        <button class="toolbtn" id="t-clr" title="Clear annotation markers">⌫ Marks</button>
+      </div>
       <button class="loadbtn" id="load">↑ Load session CSV</button>
       <input type="file" id="file" accept=".csv" hidden>
     </aside>
@@ -44,5 +61,7 @@
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
   <script src="app.js"></script>
   <script src="views2.js"></script>
+  <script src="views3.js"></script>
+  <script src="features.js"></script>
 </body>
 </html>
