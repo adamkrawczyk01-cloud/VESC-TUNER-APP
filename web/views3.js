@@ -181,6 +181,7 @@ const FAULT_NAMES = ['NONE','OVER_VOLTAGE','UNDER_VOLTAGE','DRV','ABS_OVER_CURRE
 function faultName(code){ return (code>=0&&code<FAULT_NAMES.length)?FAULT_NAMES[code]:('CODE_'+code); }
 function viewFaults(){
   const m=clearMain(); topbar(m,'Faults','mc_fault_code decode + timeline');
+  alertStrip(m);
   if(!has('fault')){ const e=el('div','empty'); e.textContent='No fault channel in this session.'; m.append(e); return; }
   const f=D.col.fault;
   // collect events (rising edges)

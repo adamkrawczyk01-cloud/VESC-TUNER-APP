@@ -1,6 +1,6 @@
 /* VESC Tuner — minimal offline cache (app shell + CDN libs).
    Bump CACHE when assets change to force an update. */
-const CACHE = 'vesc-tuner-v4';
+const CACHE = 'vesc-tuner-v5';
 const SHELL = [
   './', './index.html', './styles.css',
   './app.js', './views2.js', './views3.js', './features.js', './boards.js',

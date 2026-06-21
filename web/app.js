@@ -91,7 +91,27 @@ const FC_MAP = {
   'GPS-Long':       {to:'gps_lon'},
   'GPS-Accuracy':   {to:'gps_acc'},
   'T-BMS':          {to:'bms_temp_01'},
+  'Alert':          {to:'alert_txt'},
 };
+/* alert text -> severity colour (drawn as vertical markers on every chart) */
+function alertColor(txt){
+  const s=String(txt).toLowerCase();
+  if(s.includes('duty')) return C.error;
+  if(s.includes('cell')||s.includes('voltage')||s.includes('temp')) return C.warning;
+  if(s.includes('fault')) return C.error;
+  return C.muted;   // GPS marker / watt-hours / informational
+}
+/* build sparse alert events {t,label,color} from an imported alert_txt column */
+function computeAlerts(d){
+  const a=d.col && d.col.alert_txt; if(!a) return [];
+  const out=[];
+  for(let i=0;i<a.length;i++){ const v=a[i];
+    if(v==null||v==='') continue;
+    const label=String(v).replace(/^Marker:\s*/,'').trim();
+    out.push({ t:d.t[i], label, color:alertColor(v) });
+  }
+  return out;
+}
 function detectFormat(fields){
   if(fields.includes('ts_ms')) return 'cardputer';
   if(fields.includes('Time(s)') || fields.includes('Speed(km/h)') || fields.includes('Duty%')) return 'floatcontrol';
@@ -120,7 +140,7 @@ function importCSV(text, name, forced){
   if(!fmt){ const nl=text.indexOf('\n'); const head=(nl<0?text:text.slice(0,nl)).split(',').map(s=>s.trim()); fmt=detectFormat(head); }
   const d = fmt==='floatcontrol' ? parseFloatControl(text,name) : parseCSV(text,name);
   if(!d){ alert('Could not parse this file.'); return; }
-  d.csvText = text; D = d; renderSidebar(); render(VIEW);
+  d.csvText = text; d.alerts = computeAlerts(d); D = d; renderSidebar(); render(VIEW);
 }
 function loadCSV(text, name) { importCSV(text, name); }   // auto-detect (drag-drop, sample, history)
 
@@ -192,6 +212,10 @@ function chartCard(parent, title) {
   return { body, leg };
 }
 
+/* real drawable width of a card body (avoids spilling past the rounded frame:
+   #main padding + card padding/border are already excluded by using the body). */
+function chartWidth(body){ const w=body.clientWidth; return (w&&w>40)?w:(($('#main').clientWidth||800)-82); }
+
 /* low-level: lines = [{label,color,xs,ys,scale,width,dec,dash}] sharing grid `xs0`.
    opts.annot=false disables annotation markers (e.g. live/scatter charts).      */
 function plot(parent, title, xs0, lines, height=128, bands, opts={}) {
@@ -221,14 +245,14 @@ function plot(parent, title, xs0, lines, height=128, bands, opts={}) {
       lines.forEach((d,k)=>{ pills[k].textContent=(i!=null&&plotted[k]&&plotted[k][i]!=null)?(+plotted[k][i]).toFixed(d.dec??1):'–'; });
     }],
     setSelect:[uu=>{ selectionStats(uu, xs0, lines, selBox); }],
-    draw:[uu=>{ if(bands&&bands.length) drawBands(uu,bands); if(useAnnot) drawAnnotations(uu); }],
+    draw:[uu=>{ if(bands&&bands.length) drawBands(uu,bands); drawDataAlerts(uu,xs0); if(useAnnot) drawAnnotations(uu); }],
   };
   const u = new uPlot({
-    width: parent.clientWidth-30, height, scales, series, axes, legend:{show:false},
+    width: chartWidth(body), height, scales, series, axes, legend:{show:false},
     cursor:{ sync:{key:SYNC}, drag:{x:true,y:false}, points:{size:6} },
     hooks,
   }, data, body);
-  u._h = height; u._xs = xs0; u._raw = lines;
+  u._h = height; u._xs = xs0; u._raw = lines; u._body = body;
   if (useAnnot) body.addEventListener('dblclick', e=>{
     const rect=body.getBoundingClientRect();
     const xv=u.posToVal(e.clientX-rect.left, 'x'); if(xv==null) return;
@@ -266,6 +290,37 @@ function drawAnnotations(u){
     ctx.setLineDash([]); ctx.fillText(a.label||'•', x+3, u.bbox.top+10);
   }
   ctx.restore();
+}
+
+/* data-driven alert markers (FC "Alert" column) — vertical ticks on every
+   chart of the ACTIVE session timeline. xs0 closure guards against compare/live. */
+function drawDataAlerts(u, xs0){
+  if(!D || !D.alerts || !D.alerts.length || xs0!==D.t) return;
+  const ctx=u.ctx, top=u.bbox.top, bot=u.bbox.top+u.bbox.height; ctx.save();
+  ctx.font='9px -apple-system';
+  for(const a of D.alerts){ const x=u.valToPos(a.t,'x',true);
+    if(x<u.bbox.left||x>u.bbox.left+u.bbox.width) continue;
+    ctx.strokeStyle=a.color; ctx.fillStyle=a.color; ctx.lineWidth=1;
+    ctx.globalAlpha=.5; ctx.setLineDash([2,3]);
+    ctx.beginPath(); ctx.moveTo(x,top); ctx.lineTo(x,bot); ctx.stroke();
+    ctx.setLineDash([]); ctx.globalAlpha=1;
+    // small downward triangle flag at the top of the plot area
+    ctx.beginPath(); ctx.moveTo(x,top+6); ctx.lineTo(x-4,top); ctx.lineTo(x+4,top); ctx.closePath(); ctx.fill();
+    // label runs vertically downward so neighbouring alerts don't collide
+    ctx.save(); ctx.translate(x+3, top+8); ctx.rotate(Math.PI/2); ctx.globalAlpha=.8;
+    ctx.fillText(a.label.length>24?a.label.slice(0,23)+'…':a.label, 0, 0); ctx.restore();
+  }
+  ctx.restore();
+}
+
+/* compact list of session alerts (FC "Alert" column) for a view header */
+function alertStrip(parent){
+  if(!D || !D.alerts || !D.alerts.length) return;
+  const wrap=el('div','alertstrip');
+  D.alerts.forEach(a=>{ const c=el('span','achip'); c.style.borderColor=a.color;
+    c.innerHTML=`<i style="background:${a.color}"></i><b>${fmtTime(a.t)}</b> ${a.label}`;
+    wrap.append(c); });
+  parent.append(wrap);
 }
 
 /* horizontal limit lines (e.g. l_current_max) drawn on scale y */
@@ -309,6 +364,7 @@ function kpi(label, value, unit, sub, color) {
 
 function viewOverview() {
   const m=clearMain(); topbar(m, 'Overview', D.name);
+  alertStrip(m);
   const dur=D.t[D.n-1]||0, dist=distanceKm(), wh=last('watt_hours');
   sectionTitle(m,'Session');
   const g=el('div','kpis');
@@ -339,6 +395,7 @@ function viewOverview() {
 
 function viewTimeline() {
   const m=clearMain(); topbar(m,'Timeline','drag to zoom · hover for values');
+  alertStrip(m);
   const lim = limitBands();
   makeChart(m,'Speed / Duty',[
     {label:'speed',col:'speed_kmh',color:C.warning,scale:'y',dec:1},
@@ -520,7 +577,7 @@ window.addEventListener('drop',e=>{ e.preventDefault(); dz.classList.remove('on'
 
 // resize
 let rt; window.addEventListener('resize',()=>{ clearTimeout(rt); rt=setTimeout(()=>{
-  const w=$('#main').clientWidth-30; CHARTS.forEach(u=>u.setSize({width:w,height:u._h})); },120); });
+  CHARTS.forEach(u=>u.setSize({width:chartWidth(u._body||u.root.parentElement),height:u._h})); },120); });
 
 // auto-load bundled sample
 fetch('sample_session.csv').then(r=>r.ok?r.text():Promise.reject()).then(t=>loadCSV(t,'sample_session.csv')).catch(()=>render('overview'));
