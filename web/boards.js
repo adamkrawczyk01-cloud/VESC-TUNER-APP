@@ -56,8 +56,11 @@ async function renderBoards(){
     if(!shipped.length && !mine.length){
       const e = el('div','board-empty'); e.textContent='no rides yet — ＋ CSV'; list.append(e);
     }
-    shipped.forEach(r => list.append(rideRow({ name:r.name, sub:r.date||'shipped', key:'ship:'+b.id+':'+r.file },
-      ()=> loadShipped(r), null)));
+    shipped.forEach(r => { const row=rideRow({ name:r.name, sub:(r.grade?r.grade+' · ':'')+(r.date||'shipped'), key:'ship:'+b.id+':'+r.file },
+      ()=> loadShipped(r), null);
+      if(r.assessment){ const a=el('a','ride-note'); a.textContent='📋'; a.href='rides/'+r.assessment;
+        a.target='_blank'; a.title='Ride assessment'; a.onclick=e=>e.stopPropagation(); row.append(a); }
+      list.append(row); });
     mine.forEach(r => list.append(rideRow({ name:r.name, sub:fmtRideMeta(r), key:'idb:'+r.name },
       ()=> { BOARDS_LOADED='idb:'+r.name; loadCSV(r.csv, r.name); switchView('overview'); renderBoards(); },
       async()=> { if(confirm('Remove '+r.name+' from '+b.id+'?')){ await idbDel(r.name); renderBoards(); } })));

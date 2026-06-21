@@ -9,7 +9,9 @@
           "name": "GAD Ride #17",
           "file": "FC_GAD_Ride_17.csv",
           "src": "floatcontrol",
-          "date": "2026-06-19"
+          "date": "2026-06-19",
+          "grade": "B+",
+          "assessment": "FC_GAD_Ride_17.assessment.md"
         }
       ]
     }

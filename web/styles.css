@@ -74,6 +74,8 @@ nav{display:flex;flex-direction:column;gap:2px;padding:8px 10px}
 .ride.active{background:var(--bran-bg);color:var(--bran-text)}
 .ride .rn{font-size:12.5px;font-weight:600;flex:none;max-width:96px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ride .rsub{font-size:10px;color:var(--muted);margin-left:auto;white-space:nowrap}
+.ride-note{font-size:11px;text-decoration:none;padding-left:4px;opacity:.7}
+.ride-note:hover{opacity:1}
 .ride .rx{font-size:10px;color:var(--muted);padding-left:4px;opacity:0}
 .ride:hover .rx{opacity:.7}
 .ride .rx:hover{color:var(--error);opacity:1}
