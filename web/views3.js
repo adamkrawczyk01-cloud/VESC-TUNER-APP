@@ -500,6 +500,7 @@ let EXPLORE_COMBINED = false;
 function viewExplore(){
   const m=clearMain(); topbar(m,'Explore','pick any channels to plot over time');
   alertStrip(m);
+  cursorHud(m);
   // every channel that actually carries numeric data (incl. derived columns)
   const chans=[];
   const consider=[...new Set([...(D.fields||[]), 'power_W','cur_sat_pct','pitch_rate','roll_rate','ang_rate'])];

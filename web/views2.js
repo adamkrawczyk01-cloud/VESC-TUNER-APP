@@ -72,6 +72,7 @@ function whPerKm(h){ const d=h.distanceKm(); return d>0 ? h.last('watt_hours')/d
 function viewDiag(){
   const m=clearMain(); topbar(m,'Diagnostics','battery health & thermal headroom');
   const h=H(D);
+  const NV=(k,d)=>(typeof norm==='function'?norm(k).value:d);   // resolved thresholds (config→reference)
 
   /* ---- pack internal resistance from V-vs-I regression ---- */
   sectionTitle(m,'Pack internal resistance');
@@ -121,7 +122,7 @@ function viewDiag(){
   const fetMax=h.mx('temp_fet_C'), rise=tempRiseRate(D,'temp_fet_C');
   const limStart = cfgNum('l_temp_fet_start'), limEnd = cfgNum('l_temp_fet_end');
   tg.append(
-    kpi('Max FET', fetMax.toFixed(0),'°C', limEnd?`limit ${limEnd}°C`:'', fetMax>70?C.error:C.text),
+    kpi('Max FET', fetMax.toFixed(0),'°C', limEnd?`limit ${limEnd}°C`:'', fetMax>NV('fet_warn',70)?C.error:C.text),
     kpi('Headroom', limEnd?(limEnd-fetMax).toFixed(0):'–','°C','to throttle', (limEnd&&limEnd-fetMax<10)?C.error:C.gps),
     kpi('Rise rate', rise!=null?rise.toFixed(1):'–','°C/min','sustained load'),
     kpi('Time to limit', (rise>0&&limEnd)?(((limEnd-fetMax)/rise).toFixed(1)):'–','min','at current rate', C.warning),
@@ -143,15 +144,15 @@ function viewDiag(){
   const n90=cnt(v=>v>90), n95=cnt(v=>v>95), peak=h.mx('duty_pct');
   const dg=el('div','kpis');
   dg.append(
-    kpi('Peak duty', peak.toFixed(0),'%', null, peak>95?C.error:peak>90?C.warning:C.gps),
+    kpi('Peak duty', peak.toFixed(0),'%', null, peak>NV('duty_crit',90)?C.error:peak>NV('duty_warn',80)?C.warning:C.gps),
     kpi('Headroom', (100-peak).toFixed(0),'%','to 100%', (100-peak)<5?C.error:C.text),
     kpi('Time >90%', (n90/Math.max(1,D.n)*100).toFixed(1),'%', `${n90} samples`, n90?C.warning:C.gps),
     kpi('Time >95%', (n95/Math.max(1,D.n)*100).toFixed(1),'%','spin-out risk', n95?C.error:C.gps),
   );
   m.append(dg);
   const dnote=el('div','hint'); dnote.style.margin='0 2px 8px';
-  dnote.textContent = peak>95 ? 'Duty hit the ceiling — top speed is voltage-limited. More cells or lower load needed before pushing harder.'
-    : peak>90 ? 'Brushing the limit. Leave margin — high duty + load is where cut-outs happen.'
+  dnote.textContent = peak>NV('duty_crit',90) ? 'Duty hit the ceiling — top speed is voltage-limited. More cells or lower load needed before pushing harder.'
+    : peak>NV('duty_warn',80) ? 'Brushing the limit. Leave margin — high duty + load is where cut-outs happen.'
     : 'Comfortable duty headroom for this ride.';
   m.append(dnote);
 

@@ -15,6 +15,8 @@ let CMP = null;          // comparison dataset (session B)
 let CFG = { mcconf:null, appconf:null, suggestions:null }; // tuning context
 let CHARTS = [];         // live uPlot instances (for resize)
 let CURSOR_CB = null;    // optional hook(idx) fired on chart cursor move (Map uses it)
+let XRANGE = null;       // persistent x-axis zoom window (carried across views)
+let CURHUD = null;       // shared cursor readout element for the current view
 let VIEW = 'overview';
 let SMOOTH = { on:false, win:9 };                 // moving-average smoothing toggle
 let ANNOT = {};                                   // { sessionName: [{t,label}] }  persisted
@@ -221,7 +223,7 @@ function importCSV(text, name, forced, meta){
   const dn = parseDateFromName(name);
   d.dateHint = (meta&&meta.date) || (dn&&dn.date) || null;
   d.timeHint = (meta&&meta.time) || (dn&&dn.time) || null;
-  d.csvText = text; d.alerts = computeAlerts(d); deriveDynamics(d); D = d; renderSidebar(); render(VIEW);
+  d.csvText = text; d.alerts = computeAlerts(d); deriveDynamics(d); D = d; XRANGE=null; renderSidebar(); render(VIEW);
 }
 function loadCSV(text, name) { importCSV(text, name); }   // auto-detect (drag-drop, sample, history)
 
@@ -324,9 +326,13 @@ function plot(parent, title, xs0, lines, height=128, bands, opts={}) {
   const hooks = {
     setCursor:[uu=>{ const i=uu.cursor.idx;
       lines.forEach((d,k)=>{ pills[k].textContent=(i!=null&&plotted[k]&&plotted[k][i]!=null)?(+plotted[k][i]).toFixed(d.dec??1):'–'; });
-      if(CURSOR_CB && xs0===D.t) CURSOR_CB(i);
+      if(xs0===D.t){ if(CURSOR_CB) CURSOR_CB(i); if(CURHUD) writeCursorHud(i); }
     }],
     setSelect:[uu=>{ selectionStats(uu, xs0, lines, selBox); }],
+    setScale:[(uu,key)=>{ if(key!=='x' || xs0!==D.t) return; const s=uu.scales.x;
+      const full = s.min<=D.t[0]+1e-6 && s.max>=D.t[D.n-1]-1e-6;
+      XRANGE = full ? null : {min:s.min, max:s.max}; refreshHudZoom();
+    }],
     draw:[uu=>{ if(bands&&bands.length) drawBands(uu,bands); drawDataAlerts(uu,xs0); if(useAnnot) drawAnnotations(uu); }],
   };
   const u = new uPlot({
@@ -335,6 +341,7 @@ function plot(parent, title, xs0, lines, height=128, bands, opts={}) {
     hooks,
   }, data, body);
   u._h = height; u._xs = xs0; u._raw = lines; u._body = body;
+  if(XRANGE && xs0===D.t){ try{ u.setScale('x', XRANGE); }catch(e){} }   // carry zoom across views
   if (useAnnot) body.addEventListener('dblclick', e=>{
     const rect=body.getBoundingClientRect();
     const xv=u.posToVal(e.clientX-rect.left, 'x'); if(xv==null) return;
@@ -455,7 +462,23 @@ function makeChart(parent, title, defs, height=128, bands) {
 }
 
 /* ---------- views (core 4) ---------- */
-function clearMain(){ CHARTS=[]; const m=$('#main'); m.innerHTML=''; return m; }
+function clearMain(){ CHARTS=[]; CURHUD=null; const m=$('#main'); m.innerHTML=''; return m; }
+
+/* shared cursor readout + zoom indicator, used by chart-heavy views */
+function cursorHud(parent){
+  const h=el('div','curhud');
+  h.innerHTML='<span class="ch-val">hover charts to read values at a time</span><span class="ch-zoom"></span>';
+  CURHUD=h; parent.append(h); refreshHudZoom();
+}
+function writeCursorHud(i){ if(!CURHUD||i==null) return;
+  const g=n=>{ const a=D.col[n]; return (a&&a[i]!=null)?a[i]:null; }; const f=x=>x==null?'–':(+x).toFixed(1);
+  CURHUD.querySelector('.ch-val').innerHTML=
+    `<b>@ ${fmtTime(D.t[i])}</b> · speed ${f(g('speed_kmh'))} · duty ${f(g('duty_pct'))}% · ${f(g('voltage_V'))}V · FET ${f(g('temp_fet_C'))}° · Imot ${f(g('curr_mot_A'))}A`;
+}
+function refreshHudZoom(){ if(!CURHUD) return; const z=CURHUD.querySelector('.ch-zoom');
+  if(XRANGE){ z.innerHTML=`zoom ${fmtTime(XRANGE.min)}–${fmtTime(XRANGE.max)} <a class="ctxreset">reset</a>`;
+    z.querySelector('.ctxreset').onclick=resetZoom; } else z.textContent=''; }
+function resetZoom(){ XRANGE=null; CHARTS.forEach(u=>{ try{ u.setScale('x',{min:D.t[0],max:D.t[D.n-1]}); }catch(e){} }); refreshHudZoom(); }
 function topbar(m, title, hint){ const t=el('div','topbar'); const h=el('h1'); h.textContent=title;
   const s=el('div','hint'); s.textContent=hint||''; t.append(h,s); m.append(t); return t; }
 function sectionTitle(m, t){ const s=el('div','section-title'); s.textContent=t; m.append(s); }
@@ -510,6 +533,7 @@ function viewOverview() {
 function viewTimeline() {
   const m=clearMain(); topbar(m,'Timeline','drag to zoom · hover for values · click an alert chip to focus');
   alertStrip(m);
+  cursorHud(m);
   const focus=FOCUS_T; FOCUS_T=null;
   if(focus!=null) alertContextBanner(m, focus);
   const lim = limitBands();

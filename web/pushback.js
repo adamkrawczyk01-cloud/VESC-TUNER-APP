@@ -178,5 +178,56 @@ function drawReasonRibbon(parent, d, reason){
     ctx.fillRect(((a.t-t0)/span)*W, 0, 1.5, Hh); ctx.globalAlpha=1; });
 }
 
+/* ============================================================
+   ALERTS — unified view: FC alerts + reconstructed pushback in one
+   chronological table with telemetry context + jump-to-Timeline/Map.
+   ============================================================ */
+function viewAlerts(){
+  const m=clearMain(); topbar(m,'Alerts','every alert & buzz — what · when · why · context');
+  const cfg=pbCfg(), pb=computePushback(D,cfg), sum=pbSummary(D,pb.reason);
+  const dom=Object.entries(sum.by).sort((a,b)=>b[1].dur-a[1].dur)[0];
+  const ride=D.t[D.n-1]||0;
+
+  sectionTitle(m,'Summary');
+  const g=el('div','kpis');
+  g.append(
+    kpi('FC alerts', String((D.alerts||[]).length),'', 'Float Control column', (D.alerts||[]).length?C.warning:C.gps),
+    kpi('Buzz windows', String(sum.seg.length),'', 'reconstructed pushback', sum.seg.length?C.warning:C.gps),
+    kpi('Dominant', dom?PB_REASONS[dom[0]].label:'—','', dom?`${dom[1].dur.toFixed(0)}s`:'none', dom?PB_REASONS[dom[0]].color:C.gps),
+    kpi('Buzz time', sum.total.toFixed(0),'s', ride?`${(100*sum.total/ride).toFixed(1)}% of session`:'', C.warning),
+  );
+  m.append(g);
+
+  // merge FC alerts + pushback segments into one chronological list
+  const near=t=>{ let bi=0,bd=Infinity; for(let i=0;i<D.n;i++){ const dd=Math.abs(D.t[i]-t); if(dd<bd){bd=dd;bi=i;} } return bi; };
+  const ev=[];
+  (D.alerts||[]).forEach(a=> ev.push({t:a.t, i:(a.i!=null?a.i:near(a.t)), kind:'FC', label:a.label, color:a.color}));
+  sum.seg.forEach(s=>{ const p=PB_REASONS[s.r];
+    ev.push({t:s.t0, i:near(s.t0), kind:'Pushback', label:`${p.label} (${(s.t1-s.t0).toFixed(1)}s)`, color:p.color}); });
+  ev.sort((a,b)=>a.t-b.t);
+
+  if(!ev.length){ const ok=el('div','flag ok'); ok.innerHTML='<span class="ico">✓</span><div><div class="t">No alerts or buzz</div><div class="d">nothing crossed an alert/pushback threshold this session</div></div>'; m.append(ok); return; }
+
+  sectionTitle(m,`Events (${ev.length}) — click a row to focus the Timeline`);
+  const hasGps=H(D).has('gps_lat');
+  const f=(n,i,dec)=>{ const a=D.col[n]; return (a&&a[i]!=null)?(+a[i]).toFixed(dec==null?1:dec):'–'; };
+  const tbl=el('table','cfgtable');
+  tbl.innerHTML='<tr><th>time</th><th>source</th><th>event</th><th>speed</th><th>duty</th><th>V</th><th>FET</th><th>Imot</th><th></th></tr>';
+  ev.forEach(e=>{ const tr=el('tr'); tr.className='alertrow'; tr.style.cursor='pointer';
+    tr.innerHTML=`<td class="mono">${fmtTime(e.t)}</td>`+
+      `<td><span class="kindtag" style="border-color:${e.color};color:${e.color}">${e.kind}</span></td>`+
+      `<td style="color:${e.color};font-weight:600">${e.label}</td>`+
+      `<td class="num mono">${f('speed_kmh',e.i)}</td><td class="num mono">${f('duty_pct',e.i,0)}</td>`+
+      `<td class="num mono">${f('voltage_V',e.i)}</td><td class="num mono">${f('temp_fet_C',e.i)}</td>`+
+      `<td class="num mono">${f('curr_mot_A',e.i,0)}</td><td class="alertact"></td>`;
+    const act=tr.lastChild;
+    const b1=el('button','loadbtn sm'); b1.textContent='⤢'; b1.title='Zoom Timeline to this moment'; b1.onclick=ev2=>{ ev2.stopPropagation(); gotoAlert({t:e.t}); };
+    act.append(b1);
+    if(hasGps){ const b2=el('button','loadbtn sm ghost'); b2.textContent='⌖'; b2.title='Show on map'; b2.onclick=ev2=>{ ev2.stopPropagation(); switchView('map'); }; act.append(b2); }
+    tr.onclick=()=>gotoAlert({t:e.t});
+    tbl.append(tr); });
+  m.append(tbl);
+}
+
 /* register */
-Object.assign(VIEWS, { pushback:viewPushback });
+Object.assign(VIEWS, { pushback:viewPushback, alerts:viewAlerts });
