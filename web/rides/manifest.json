@@ -1,0 +1,17 @@
+{
+  "boards": [
+    {
+      "id": "GAD",
+      "name": "GAD",
+      "note": "Float Control rides",
+      "rides": [
+        {
+          "name": "GAD Ride #17",
+          "file": "FC_GAD_Ride_17.csv",
+          "src": "floatcontrol",
+          "date": "2026-06-19"
+        }
+      ]
+    }
+  ]
+}

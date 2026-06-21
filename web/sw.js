@@ -1,10 +1,10 @@
 /* VESC Tuner — minimal offline cache (app shell + CDN libs).
    Bump CACHE when assets change to force an update. */
-const CACHE = 'vesc-tuner-v3';
+const CACHE = 'vesc-tuner-v4';
 const SHELL = [
   './', './index.html', './styles.css',
-  './app.js', './views2.js', './views3.js', './features.js',
-  './manifest.json', './sample_session.csv',
+  './app.js', './views2.js', './views3.js', './features.js', './boards.js',
+  './manifest.json', './sample_session.csv', './rides/manifest.json',
   './icon-192.png', './icon-512.png',
   'https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.min.css',
   'https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js',

@@ -26,6 +26,7 @@
         <div class="name" id="sess-name">no session</div>
         <div class="meta" id="sess-meta">drop a session CSV</div>
       </div>
+      <div class="boards" id="boards"></div>
       <nav id="nav">
         <span class="navlbl">VIEWS</span>
         <button class="navitem active" data-v="overview"><span class="dot" style="background:var(--bran)"></span>Overview</button>
@@ -63,6 +64,7 @@
         <button class="loadbtn" id="imp-floaty" disabled title="No sample data yet — coming later">↑ Floaty (soon)</button>
       </div>
       <input type="file" id="file" accept=".csv,.txt" hidden>
+      <input type="file" id="board-file" accept=".csv,.txt" hidden>
     </aside>
 
     <main class="main" id="main"></main>
@@ -77,5 +79,6 @@
   <script src="views2.js"></script>
   <script src="views3.js"></script>
   <script src="features.js"></script>
+  <script src="boards.js"></script>
 </body>
 </html>
