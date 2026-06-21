@@ -128,7 +128,38 @@ nav{display:flex;flex-direction:column;gap:2px;padding:8px 10px}
 .achip{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:var(--text2);
   background:var(--surface);border:1px solid var(--border);border-left-width:3px;border-radius:7px;padding:3px 9px}
 .achip i{width:7px;height:7px;border-radius:2px;flex:none}
+.achip{cursor:pointer;transition:.12s}
+.achip:hover{border-color:var(--bran);background:var(--row)}
 .achip b{color:var(--text);font-variant-numeric:tabular-nums}
+
+/* ---- assessment card ---- */
+.assess{display:flex;gap:16px;align-items:flex-start;background:var(--surface);
+  border:1px solid var(--border);border-radius:12px;padding:14px 16px;margin-bottom:14px}
+.agrade{flex:none;width:74px;height:74px;border:2px solid;border-radius:12px;display:flex;
+  flex-direction:column;align-items:center;justify-content:center;font-size:30px;font-weight:800;line-height:1}
+.agrade small{font-size:11px;font-weight:600;color:var(--muted);margin-top:2px}
+.abody{flex:1;min-width:0}
+.achips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.astat{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--text2);
+  border:1px solid var(--border);border-left-width:3px;border-radius:7px;padding:2px 8px;cursor:help}
+.astat i{width:7px;height:7px;border-radius:2px}
+.afind{font-size:12px;color:var(--text2);margin-bottom:6px}
+.afind b{color:var(--text)}
+.arec{margin:0;padding-left:18px;font-size:12px;color:var(--text2)}
+.arec li{margin:2px 0}
+
+/* ---- alert context banner (Timeline focus) ---- */
+.alertctx{background:var(--bran-bg);border:1px solid var(--bran);border-radius:8px;
+  padding:7px 11px;margin-bottom:12px;font-size:12px;color:var(--text2);font-variant-numeric:tabular-nums}
+.alertctx b{color:var(--text)}
+.ctxreset{margin-left:8px;color:var(--bran-text);cursor:pointer;text-decoration:underline}
+
+/* ---- explore channel picker ---- */
+.exbar{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.exchip{font-size:11.5px;font-family:inherit;color:var(--text2);background:var(--surface);
+  border:1px solid var(--border);border-radius:7px;padding:4px 9px;cursor:pointer;transition:.12s}
+.exchip:hover{border-color:var(--bran);color:var(--bran-text)}
+.exchip.on{background:var(--bran-bg);border-color:var(--bran);color:var(--bran-text)}
 
 /* ---- reference / norms ---- */
 .srcref{display:inline-block;font-size:9px;font-weight:700;letter-spacing:.4px;

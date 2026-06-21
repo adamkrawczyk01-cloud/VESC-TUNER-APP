@@ -66,6 +66,69 @@ function norm(key){
   return {value:null,tier:'?',source:'?'};
 }
 
+/* ---------- live ride assessment (grade + findings + recommendations) ---------- */
+function computeAssessment(d){
+  const h=H(d), dims=[], rec=[];
+  const push=(label,status,detail,tier)=>dims.push({label,status,detail,tier});
+
+  const fw=norm('fet_warn'), fc=norm('fet_crit'), fet=h.mx('temp_fet_C');
+  if(fet>0) push('FET temp', fet>fc.value?'err':fet>fw.value?'warn':'ok', `max ${fet.toFixed(0)}° (warn ${fw.value}°)`, fw.tier);
+  const mw=norm('mot_warn'), mot=h.mx('temp_mot_C');
+  if(mot>0) push('Motor temp', mot>mw.value?'warn':'ok', `max ${mot.toFixed(0)}° (warn ${mw.value}°)`, mw.tier);
+  const bw=norm('batt_warn'), bc=norm('batt_crit'), bt=h.mx('temp_bat_C');
+  if(bt>0) push('Battery temp', bt>bc.value?'err':bt>bw.value?'warn':'ok', `max ${bt.toFixed(0)}° (warn ${bw.value}°)`, bw.tier);
+
+  const dw=norm('duty_warn'), dc=norm('duty_crit'), dmax=h.mx('duty_pct');
+  let over=0,tot=0; const duty=d.col.duty_pct; if(duty) for(const v of duty){ if(v!=null){tot++; if(v>dw.value)over++;} }
+  const pctOver=tot?100*over/tot:0;
+  if(dmax>0){ push('Duty', (dmax>dc.value&&pctOver>1)?'err':dmax>dw.value?'warn':'ok',
+    `max ${dmax.toFixed(0)}%, ${pctOver.toFixed(1)}% time >${dw.value}%`, dw.tier);
+    if(dmax>dw.value) rec.push('Mind brief duty spikes — don’t push top speed on low battery.'); }
+
+  if(typeof computePushback==='function' && typeof pbCfg==='function'){
+    const pb=computePushback(d,pbCfg()), sum=pbSummary(d,pb.reason);
+    const dom=Object.entries(sum.by).sort((a,b)=>b[1].dur-a[1].dur)[0];
+    if(sum.seg.length) push('Pushback/haptic','warn',`${sum.seg.length} buzz windows, dominant ${dom?PB_REASONS[dom[0]].label:'—'}`,'firmware');
+  }
+  const hvAlerts=(d.alerts||[]).filter(a=>/cell voltage high|high voltage/i.test(a.label)).length;
+  if(hvAlerts) rec.push('Balance-charge the pack — high-voltage buzz on braking points to cell imbalance.');
+
+  if(h.has('cell_min')){ const cw=norm('cell_warn'), vmin=h.mn('cell_min');
+    if(vmin>0) push('Min cell', vmin<cw.value?'warn':'ok', `${vmin.toFixed(2)}V (warn ${cw.value}V)`, cw.tier); }
+
+  const dist=h.distanceKm(), whkm=dist>0?(h.last('watt_hours')-(h.last('wh_charged')||0))/dist:null;
+  if(whkm!=null && whkm>0){ const e=REF.efficiency.city;
+    push('Efficiency', whkm<=e.average?'ok':whkm<=e.poor?'warn':'err', `${whkm.toFixed(1)} Wh/km (good ≤${e.good})`, 'community'); }
+
+  if(d.col.fault){ let n=0; for(const v of d.col.fault) if(v>0) n++;
+    if(n){ push('Faults','err',`${n} fault samples`,'firmware'); rec.push('Investigate the logged mc_fault codes (Faults view).'); } }
+
+  if(!CFG.mcconf) rec.push('Load this board’s mcconf (a Cardputer session) for board-exact, BOARD-tier limits.');
+
+  const err=dims.filter(x=>x.status==='err').length, warn=dims.filter(x=>x.status==='warn').length;
+  const score=Math.max(0, 100 - err*20 - warn*8);
+  const grade = score>=90?'A':score>=82?'B+':score>=72?'B':score>=62?'C+':score>=50?'C':'D';
+  const findings=dims.filter(x=>x.status!=='ok').map(x=>`${x.label}: ${x.detail}`);
+  return { grade, score, dims, findings, rec };
+}
+function assessmentCard(parent, d){
+  if(typeof norm!=='function') return;
+  const a=computeAssessment(d);
+  sectionTitle(parent,'Assessment');
+  const gcol = a.score>=82?'#22c55e':a.score>=62?'#facc15':'#ef4444';
+  const card=el('div','assess');
+  card.innerHTML=`<div class="agrade" style="color:${gcol};border-color:${gcol}">${a.grade}<small>${a.score}</small></div>`;
+  const body=el('div','abody');
+  const chips=el('div','achips');
+  a.dims.forEach(x=>{ const c=x.status==='err'?'#ef4444':x.status==='warn'?'#f97316':'#22c55e';
+    const s=el('span','astat'); s.style.borderColor=c; s.title=x.detail+(x.tier?` · ${x.tier}`:'');
+    s.innerHTML=`<i style="background:${c}"></i>${x.label}`; chips.append(s); });
+  body.append(chips);
+  if(a.findings.length){ const fd=el('div','afind'); fd.innerHTML='<b>Findings:</b> '+a.findings.join(' · '); body.append(fd); }
+  if(a.rec.length){ const rc=el('ul','arec'); a.rec.forEach(r=>{ const li=el('li'); li.textContent=r; rc.append(li); }); body.append(rc); }
+  card.append(body); parent.append(card);
+}
+
 /* ---------- Norms / reference view ---------- */
 function viewNorms(){
   const m=clearMain(); topbar(m,'Norms / reference','where every "is this normal?" threshold comes from');

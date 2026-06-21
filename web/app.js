@@ -395,14 +395,37 @@ function drawDataAlerts(u, xs0){
   ctx.restore();
 }
 
-/* compact list of session alerts (FC "Alert" column) for a view header */
+/* compact list of session alerts (FC "Alert" column) for a view header.
+   Chips are clickable → jump to Timeline, zoom to the moment, show context. */
 function alertStrip(parent){
   if(!D || !D.alerts || !D.alerts.length) return;
   const wrap=el('div','alertstrip');
   D.alerts.forEach(a=>{ const c=el('span','achip'); c.style.borderColor=a.color;
     c.innerHTML=`<i style="background:${a.color}"></i><b>${fmtTime(a.t)}</b> ${a.label}`;
+    c.title='Click → zoom Timeline to this moment';
+    c.onclick=()=>gotoAlert(a);
     wrap.append(c); });
   parent.append(wrap);
+}
+/* zoom every live chart's x-axis to a window around time t (seconds) */
+let FOCUS_T = null;   // pending time to zoom Timeline to on next render
+function zoomToTime(t, pad){ pad=pad||15;
+  CHARTS.forEach(u=>{ try{ u.setScale('x',{min:Math.max(0,t-pad), max:t+pad}); }catch(e){} }); }
+function gotoAlert(a){ FOCUS_T = a.t; switchView('timeline'); }
+/* one-line readout of telemetry at time t (nearest sample) + nearest alert */
+function alertContextBanner(parent, t){
+  let bi=0, bd=Infinity; for(let i=0;i<D.n;i++){ const dd=Math.abs(D.t[i]-t); if(dd<bd){bd=dd;bi=i;} }
+  const g=n=>{ const a=D.col[n]; return (a&&a[bi]!=null)?a[bi]:null; };
+  const f=v=>v==null?'–':(+v).toFixed(1);
+  const al=(D.alerts||[]).reduce((b,a)=> Math.abs(a.t-t)<Math.abs((b?b.t:1e9)-t)?a:b, null);
+  const bar=el('div','alertctx');
+  bar.innerHTML=`<b>@ ${fmtTime(t)}</b>`+
+    (al&&Math.abs(al.t-t)<2?` <span style="color:${al.color};font-weight:700">${al.label}</span>`:'')+
+    ` · speed <b>${f(g('speed_kmh'))}</b> km/h · duty <b>${f(g('duty_pct'))}</b>% · <b>${f(g('voltage_V'))}</b>V`+
+    ` · FET <b>${f(g('temp_fet_C'))}</b>° · Imot <b>${f(g('curr_mot_A'))}</b>A`+
+    ` <a class="ctxreset" title="reset zoom">reset</a>`;
+  bar.querySelector('.ctxreset').onclick=()=>{ CHARTS.forEach(u=>{ try{ u.setScale('x',{min:D.t[0],max:D.t[D.n-1]}); }catch(e){} }); };
+  parent.append(bar);
 }
 
 /* horizontal limit lines (e.g. l_current_max) drawn on scale y */
@@ -447,6 +470,7 @@ function kpi(label, value, unit, sub, color) {
 function viewOverview() {
   const m=clearMain(); topbar(m, 'Overview', D.name);
   alertStrip(m);
+  if(typeof assessmentCard==='function') assessmentCard(m, D);
   const dur=D.t[D.n-1]||0, dist=distanceKm(), wh=last('watt_hours');
   const NV=(k,dflt)=>(typeof norm==='function'?norm(k).value:dflt);   // resolved threshold (config→reference)
   sectionTitle(m,'Session');
@@ -484,8 +508,10 @@ function viewOverview() {
 }
 
 function viewTimeline() {
-  const m=clearMain(); topbar(m,'Timeline','drag to zoom · hover for values');
+  const m=clearMain(); topbar(m,'Timeline','drag to zoom · hover for values · click an alert chip to focus');
   alertStrip(m);
+  const focus=FOCUS_T; FOCUS_T=null;
+  if(focus!=null) alertContextBanner(m, focus);
   const lim = limitBands();
   makeChart(m,'Speed / Duty',[
     {label:'speed',col:'speed_kmh',color:C.warning,scale:'y',dec:1},
@@ -510,6 +536,7 @@ function viewTimeline() {
     {label:'setpoint',col:'setpoint_deg',color:C.highlight,dec:1},
     {label:'roll',col:'roll_deg',color:C.muted,dec:1},
   ]);
+  if(focus!=null) zoomToTime(focus, 15);
 }
 
 function viewBattery() {

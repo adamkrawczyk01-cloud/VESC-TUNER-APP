@@ -493,8 +493,49 @@ function drawRoute(cv, pts){
   ctx.fillStyle=C.muted; ctx.fillText('colour = speed (cyan slow → red fast)', 12, Hh-8);
 }
 
+/* ============================================================
+   EXPLORE — plot any channel(s) over time (free-form review)
+   ============================================================ */
+let EXPLORE_COMBINED = false;
+function viewExplore(){
+  const m=clearMain(); topbar(m,'Explore','pick any channels to plot over time');
+  alertStrip(m);
+  // every channel that actually carries numeric data (incl. derived columns)
+  const chans=[];
+  const consider=[...new Set([...(D.fields||[]), 'power_W','cur_sat_pct','pitch_rate','roll_rate','ang_rate'])];
+  consider.forEach(c=>{ if(c==='ts_ms') return; const a=D.col[c];
+    if(a && a.some(v=>typeof v==='number' && v!=null)) chans.push(c); });
+
+  let sel=[]; try{ sel=JSON.parse(localStorage.getItem('vesc_explore')||'[]'); }catch(e){}
+  sel=sel.filter(c=>chans.includes(c));
+  if(!sel.length) sel=chans.filter(c=>/^(speed_kmh|duty_pct|voltage_V|temp_fet_C)$/.test(c)).slice(0,4);
+  const save=()=>{ try{ localStorage.setItem('vesc_explore', JSON.stringify(sel)); }catch(e){} };
+
+  const bar=el('div','exbar');
+  chans.forEach(c=>{ const b=el('button','exchip'+(sel.includes(c)?' on':'')); b.textContent=c;
+    b.onclick=()=>{ const i=sel.indexOf(c); if(i>=0) sel.splice(i,1); else sel.push(c); save(); render('explore'); };
+    bar.append(b); });
+  m.append(bar);
+
+  const tools=el('div','cmpbar');
+  tools.append(
+    btn(EXPLORE_COMBINED?'◧ Separate charts':'▭ Combined chart', ()=>{ EXPLORE_COMBINED=!EXPLORE_COMBINED; render('explore'); }, 'sm ghost'),
+    btn('Clear', ()=>{ sel=[]; save(); render('explore'); }, 'sm ghost'),
+  );
+  m.append(tools);
+
+  if(!sel.length){ const e=el('div','empty'); e.textContent='Pick channels above to plot them.'; m.append(e); return; }
+  const palette=[C.warning,C.wheel,C.target,C.gps,C.teal,C.highlight,C.error,C.bran,C.muted];
+  if(EXPLORE_COMBINED){
+    makeChart(m,'Selected channels', sel.map((c,i)=>({label:c,col:c,color:palette[i%palette.length],scale:i%2?'y2':'y',dec:2})), 220);
+  } else {
+    sel.forEach((c,i)=> makeChart(m, c, [{label:c,col:c,color:palette[i%palette.length],dec:2}], 110));
+  }
+}
+
 /* register */
 Object.assign(VIEWS, {
   histograms:viewHistograms, segments:viewSegments, efficiency:viewEfficiency, map:viewMap,
   motor:viewMotor, faults:viewFaults, stats:viewStats, replay:viewReplay, history:viewHistory,
+  explore:viewExplore,
 });
