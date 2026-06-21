@@ -467,7 +467,7 @@ function viewTimeline() {
   makeChart(m,'Speed / Duty',[
     {label:'speed',col:'speed_kmh',color:C.warning,scale:'y',dec:1},
     {label:'duty %',col:'duty_pct',color:C.highlight,scale:'y2',dec:0},
-  ],140);
+  ],140, lim.duty);
   makeChart(m,'Power / Current',[
     {label:'A in',col:'curr_in_A',color:C.wheel,dec:1},
     {label:'A motor',col:'curr_mot_A',color:C.bran,dec:1},
@@ -481,7 +481,7 @@ function viewTimeline() {
   makeChart(m,'Voltage',[
     {label:'pack V',col:'voltage_V',color:C.teal,dec:1},
     {label:'V/cell',col:'vcell_V',color:C.bran,scale:'y2',dec:3},
-  ]);
+  ],128, lim.volt);
   makeChart(m,'Pitch / Setpoint',[
     {label:'pitch',col:'pitch_deg',color:C.wheel,dec:1},
     {label:'setpoint',col:'setpoint_deg',color:C.highlight,dec:1},
@@ -578,15 +578,23 @@ function viewImu() {
   ]);
 }
 
-/* limit lines from mcconf (used as chart bands when a config is loaded) */
+/* limit lines for chart bands: mcconf current limit + Refloat pushback/haptic
+   thresholds (duty/HV/LV/temps) so every Timeline chart shows the buzz line. */
 function limitBands(){
-  const mc = CFG.mcconf; if(!mc) return { current:null, temp:null };
-  const g = k => (mc[k] ?? mc[k?.toUpperCase?.()] );
-  const bands = { current:[], temp:[] };
-  const im = g('l_in_current_max'); if(im!=null) bands.current.push({value:+im, scale:'y', color:C.error, label:`l_in_current_max ${im}A`});
-  const tf = g('l_temp_fet_start'); if(tf!=null) bands.temp.push({value:+tf, scale:'y', color:C.warning, label:`fet_start ${tf}°`});
-  const te = g('l_temp_fet_end');   if(te!=null) bands.temp.push({value:+te, scale:'y', color:C.error, label:`fet_end ${te}°`});
-  return { current:bands.current.length?bands.current:null, temp:bands.temp.length?bands.temp:null };
+  const bands = { current:[], temp:[], duty:[], volt:[] };
+  const mc = CFG.mcconf;
+  if(mc){ const g = k => (mc[k] ?? mc[k?.toUpperCase?.()]);
+    const im = g('l_in_current_max'); if(im!=null) bands.current.push({value:+im, scale:'y', color:C.error, label:`l_in_current_max ${im}A`});
+  }
+  if(typeof pbCfg==='function' && D){ const c = pbCfg();
+    bands.duty.push({value:c.tiltback_duty, scale:'y2', color:C.error, label:`buzz ${c.tiltback_duty}%`});
+    bands.volt.push({value:c.hv, scale:'y', color:C.warning, label:`HV ${c.hv}`},
+                    {value:c.lv, scale:'y', color:C.highlight, label:`LV ${c.lv}`});
+    bands.temp.push({value:c.fet_max, scale:'y', color:C.error, label:`FET ${c.fet_max}°`},
+                    {value:c.mot_max, scale:'y', color:C.warning, label:`motor ${c.mot_max}°`});
+  }
+  const nn = a => a.length?a:null;
+  return { current:nn(bands.current), temp:nn(bands.temp), duty:nn(bands.duty), volt:nn(bands.volt) };
 }
 
 /* ---------- auto-flags (dataset-aware) ---------- */
