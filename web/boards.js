@@ -89,7 +89,7 @@ async function loadShipped(r){
     const res = await fetch(key); if(!res.ok) throw new Error(res.status);
     const text = await res.text();
     BOARDS_LOADED = 'ship:loaded:'+r.file;
-    importCSV(text, r.name, r.src||null);
+    importCSV(text, r.name, r.src||null, { date:r.date, time:r.time });
     switchView('overview');
     renderBoards();
   }catch(e){ alert('Could not load '+r.name+' ('+e.message+').\nIs rides/'+r.file+' deployed?'); }

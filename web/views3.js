@@ -375,7 +375,8 @@ function haversine(a, b){
   return 2*R*Math.asin(Math.sqrt(h));
 }
 function viewMap(){
-  const m=clearMain(); topbar(m,'Map / GPS','route coloured by speed · from Float Control imports');
+  const m=clearMain(); topbar(m,'Map / GPS','route coloured by speed · hover a chart to trace position');
+  CURSOR_CB=null; alertStrip(m);
   if(!has('gps_lat')||!has('gps_lon')){
     const e=el('div','empty'); e.innerHTML='No GPS in this session.<br>Import a Float Control ride (it carries lat/long + altitude).'; m.append(e); return;
   }
@@ -396,19 +397,39 @@ function viewMap(){
   m.append(g);
 
   if (typeof L !== 'undefined') {
+    const hud=el('div','maphud'); hud.textContent='hover a chart below to trace where it happened'; MAP_READOUT=hud; m.append(hud);
     const card=el('div','chart-card'); const mapDiv=el('div'); mapDiv.id='leafmap'; card.append(mapDiv); m.append(card);
-    const note=el('div','hint'); note.style.margin='4px 2px 0'; note.textContent='© OpenStreetMap · colour = speed (cyan slow → red fast)'; m.append(note);
+    const note=el('div','hint'); note.style.margin='4px 2px 0'; note.textContent='© OpenStreetMap · line = speed (cyan slow → red fast) · ◆ = cursor · ● = alert'; m.append(note);
     // Leaflet needs the container in the DOM and sized before init
     setTimeout(()=>drawLeafletRoute(mapDiv, pts), 0);
   } else {
     const card=el('div','chart-card'); const cv=el('canvas','mapcanvas'); card.append(cv); m.append(card);
     drawRoute(cv, pts);   // offline / no Leaflet → plain canvas track
   }
-  // altitude over time
-  if(alt) makeChart(m,'Altitude (m)',[{label:'alt',col:'altitude_m',color:C.teal,dec:0}],150);
+  // telemetry to scrub — hovering any of these moves the map position marker
+  sectionTitle(m,'Trace');
+  makeChart(m,'Speed (km/h)',[{label:'speed',col:'speed_kmh',color:C.warning,dec:1}],118);
+  makeChart(m,'Voltage / Current',[
+    {label:'pack V',col:'voltage_V',color:C.teal,dec:1},
+    {label:'A motor',col:'curr_mot_A',color:C.bran,scale:'y2',dec:0},
+  ],118);
+  if(has('temp_fet_C')||has('temp_mot_C')) makeChart(m,'Temperatures',[
+    {label:'FET',col:'temp_fet_C',color:C.error,dec:1},
+    {label:'motor',col:'temp_mot_C',color:C.warning,dec:1},
+  ],118);
+  if(alt) makeChart(m,'Altitude (m)',[{label:'alt',col:'altitude_m',color:C.teal,dec:0}],118);
 }
-let LEAFMAP = null;
-function leafmapStop(){ if(LEAFMAP){ try{ LEAFMAP.remove(); }catch(e){} LEAFMAP=null; } }
+let LEAFMAP = null, MAP_CURSOR_MARKER = null, MAP_READOUT = null;
+function leafmapStop(){ CURSOR_CB=null; MAP_CURSOR_MARKER=null; MAP_READOUT=null;
+  if(LEAFMAP){ try{ LEAFMAP.remove(); }catch(e){} LEAFMAP=null; } }
+/* nearest valid GPS [lat,lon] to sample index i (GPS is sparse vs telemetry) */
+function gpsAt(i){ if(i==null||!D) return null; const la=D.col.gps_lat, lo=D.col.gps_lon; if(!la||!lo) return null;
+  for(let k=0;k<D.n;k++){ const a=i+k, b=i-k;
+    if(a<D.n && la[a]!=null && lo[a]!=null && Math.abs(la[a])>1e-4) return [la[a],lo[a]];
+    if(b>=0 && la[b]!=null && lo[b]!=null && Math.abs(la[b])>1e-4) return [la[b],lo[b]];
+  }
+  return null;
+}
 function drawLeafletRoute(div, pts){
   if (LEAFMAP) { try{ LEAFMAP.remove(); }catch(e){} LEAFMAP=null; }
   const map = L.map(div, { zoomControl:true, attributionControl:false });
@@ -428,6 +449,18 @@ function drawLeafletRoute(div, pts){
   const A=pts[0], B=pts[pts.length-1];
   L.circleMarker([A.lat,A.lon], {radius:6,color:C.gps,fillColor:C.gps,fillOpacity:1}).addTo(map).bindTooltip('start');
   L.circleMarker([B.lat,B.lon], {radius:6,color:C.error,fillColor:C.error,fillOpacity:1}).addTo(map).bindTooltip('end');
+  // alert positions on the route — where each FC alert (buzz) happened
+  (D.alerts||[]).forEach(a=>{ const p=gpsAt(a.i); if(!p) return;
+    L.circleMarker(p, {radius:6,color:a.color,weight:2,fillColor:a.color,fillOpacity:.85})
+      .addTo(map).bindTooltip(`${fmtTime(a.t)} · ${a.label}`, {direction:'top'}); });
+  // cursor-tracking position marker — follows the chart time cursor
+  MAP_CURSOR_MARKER = L.circleMarker([A.lat,A.lon],
+    {radius:7,color:'#fff',weight:2,fillColor:C.target,fillOpacity:.95}).addTo(map);
+  CURSOR_CB = (i)=>{ if(i==null||!MAP_CURSOR_MARKER) return; const p=gpsAt(i); if(!p) return;
+    MAP_CURSOR_MARKER.setLatLng(p);
+    const s=D.col.speed_kmh?D.col.speed_kmh[i]:null;
+    if(MAP_READOUT) MAP_READOUT.innerHTML=`▶ <b>${fmtTime(D.t[i])}</b>`+
+      (s!=null?` · ${(+s).toFixed(1)} km/h`:'')+` · ${p[0].toFixed(5)}, ${p[1].toFixed(5)}`; };
   const lats=pts.map(p=>p.lat), lons=pts.map(p=>p.lon);
   map.fitBounds([[Math.min(...lats),Math.min(...lons)],[Math.max(...lats),Math.max(...lons)]], {padding:[20,20]});
   setTimeout(()=>map.invalidateSize(), 60);

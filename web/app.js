@@ -14,6 +14,7 @@ let D = null;            // active dataset
 let CMP = null;          // comparison dataset (session B)
 let CFG = { mcconf:null, appconf:null, suggestions:null }; // tuning context
 let CHARTS = [];         // live uPlot instances (for resize)
+let CURSOR_CB = null;    // optional hook(idx) fired on chart cursor move (Map uses it)
 let VIEW = 'overview';
 let SMOOTH = { on:false, win:9 };                 // moving-average smoothing toggle
 let ANNOT = {};                                   // { sessionName: [{t,label}] }  persisted
@@ -108,9 +109,65 @@ function computeAlerts(d){
   for(let i=0;i<a.length;i++){ const v=a[i];
     if(v==null||v==='') continue;
     const label=String(v).replace(/^Marker:\s*/,'').trim();
-    out.push({ t:d.t[i], label, color:alertColor(v) });
+    out.push({ t:d.t[i], i, label, color:alertColor(v) });
   }
   return out;
+}
+/* derive ride date/time from a Float Control filename (…_YYYYMMDDHHMMSS.csv) */
+function parseDateFromName(name){
+  const m=String(name||'').match(/(\d{4})(\d{2})(\d{2})(\d{2})?(\d{2})?(\d{2})?/);
+  if(!m) return null;
+  const date=`${m[1]}-${m[2]}-${m[3]}`;
+  const time=m[4]?`${m[4]}:${m[5]||'00'}:${m[6]||'00'}`:null;
+  return { date, time };
+}
+/* mean lat/lon of valid GPS samples (for a single weather query point) */
+function gpsCentroid(d){
+  const la=d.col.gps_lat, lo=d.col.gps_lon; if(!la||!lo) return null;
+  let s1=0,s2=0,n=0;
+  for(let i=0;i<d.n;i++){ if(la[i]!=null&&lo[i]!=null&&Math.abs(la[i])>1e-4){ s1+=la[i]; s2+=lo[i]; n++; } }
+  return n?{lat:s1/n,lon:s2/n}:null;
+}
+/* fetch that-day weather from Open-Meteo archive (no key, CORS-ok); cached */
+async function fetchWeather(date, lat, lon, d){
+  if(d && d.weather) return d.weather;
+  const key='wx:'+date+':'+lat.toFixed(2)+':'+lon.toFixed(2);
+  try{ const c=localStorage.getItem(key); if(c){ const w=JSON.parse(c); if(d)d.weather=w; return w; } }catch(e){}
+  const url=`https://archive-api.open-meteo.com/v1/archive?latitude=${lat.toFixed(4)}&longitude=${lon.toFixed(4)}`+
+    `&start_date=${date}&end_date=${date}`+
+    `&daily=temperature_2m_max,temperature_2m_min,temperature_2m_mean,relative_humidity_2m_mean,precipitation_sum,windspeed_10m_max&timezone=auto`;
+  const res=await fetch(url); if(!res.ok) throw new Error('HTTP '+res.status);
+  const j=await res.json(); const dd=j.daily||{};
+  const g=a=>(dd[a]&&dd[a][0]!=null)?dd[a][0]:null;
+  let tmean=g('temperature_2m_mean'); const tmax=g('temperature_2m_max'), tmin=g('temperature_2m_min');
+  if(tmean==null && tmax!=null && tmin!=null) tmean=(tmax+tmin)/2;
+  const w={ tmax, tmin, tmean, humidity:g('relative_humidity_2m_mean'),
+            precip:g('precipitation_sum'), wind:g('windspeed_10m_max') };
+  try{ localStorage.setItem(key, JSON.stringify(w)); }catch(e){}
+  if(d) d.weather=w; return w;
+}
+/* render the Weather section into Overview (async fill; graceful offline) */
+async function renderWeather(d, box, note){
+  const dt = d.dateHint;
+  if(!dt){ note.textContent='No date in this session — weather needs a dated Float Control file.'; return; }
+  const ll = gpsCentroid(d);
+  if(!ll){ note.textContent='No GPS in this session — weather lookup needs a location.'; return; }
+  box.innerHTML='<div class="kpi"><div class="k">Weather</div><div class="v mono">…</div></div>';
+  try{
+    const w = await fetchWeather(dt, ll.lat, ll.lon, d);
+    box.innerHTML='';
+    box.append(
+      kpi('Air temp', w.tmean!=null?w.tmean.toFixed(1):'–','°C',
+          (w.tmin!=null&&w.tmax!=null)?`${w.tmin.toFixed(0)}–${w.tmax.toFixed(0)}° range`:'', C.warning),
+      kpi('Humidity', w.humidity!=null?w.humidity.toFixed(0):'–','%', null, C.wheel),
+      kpi('Precip', w.precip!=null?w.precip.toFixed(1):'–','mm', w.precip>0?'wet ride':'dry', w.precip>0?C.wheel:C.gps),
+      kpi('Max wind', w.wind!=null?w.wind.toFixed(0):'–','km/h'),
+    );
+    note.innerHTML=`<span class="srctag" style="background:none;color:var(--muted);padding:0">that day · ${dt} · ${ll.lat.toFixed(3)},${ll.lon.toFixed(3)} · © Open-Meteo</span>`;
+  }catch(e){
+    box.innerHTML='';
+    note.textContent='Weather unavailable ('+(navigator.onLine?e.message:'offline — connect once to cache')+').';
+  }
 }
 function detectFormat(fields){
   if(fields.includes('ts_ms')) return 'cardputer';
@@ -135,11 +192,14 @@ function parseFloatControl(text, name){
   const t = (col.ts_ms || rows.map((_,i)=>i*1000)).map(v=>(v-t0)/1000);
   return { name:(name||'session').replace(/\.(csv|txt)$/i,''), n:rows.length, fields:Object.keys(col), col, t, cells:[], source:'floatcontrol' };
 }
-function importCSV(text, name, forced){
+function importCSV(text, name, forced, meta){
   let fmt = forced;
   if(!fmt){ const nl=text.indexOf('\n'); const head=(nl<0?text:text.slice(0,nl)).split(',').map(s=>s.trim()); fmt=detectFormat(head); }
   const d = fmt==='floatcontrol' ? parseFloatControl(text,name) : parseCSV(text,name);
   if(!d){ alert('Could not parse this file.'); return; }
+  const dn = parseDateFromName(name);
+  d.dateHint = (meta&&meta.date) || (dn&&dn.date) || null;
+  d.timeHint = (meta&&meta.time) || (dn&&dn.time) || null;
   d.csvText = text; d.alerts = computeAlerts(d); D = d; renderSidebar(); render(VIEW);
 }
 function loadCSV(text, name) { importCSV(text, name); }   // auto-detect (drag-drop, sample, history)
@@ -243,6 +303,7 @@ function plot(parent, title, xs0, lines, height=128, bands, opts={}) {
   const hooks = {
     setCursor:[uu=>{ const i=uu.cursor.idx;
       lines.forEach((d,k)=>{ pills[k].textContent=(i!=null&&plotted[k]&&plotted[k][i]!=null)?(+plotted[k][i]).toFixed(d.dec??1):'–'; });
+      if(CURSOR_CB && xs0===D.t) CURSOR_CB(i);
     }],
     setSelect:[uu=>{ selectionStats(uu, xs0, lines, selBox); }],
     draw:[uu=>{ if(bands&&bands.length) drawBands(uu,bands); drawDataAlerts(uu,xs0); if(useAnnot) drawAnnotations(uu); }],
@@ -383,6 +444,12 @@ function viewOverview() {
     kpi('Cell Δ max', has('cell_delta_mV')?mx('cell_delta_mV').toFixed(0):'–', 'mV', null, mx('cell_delta_mV')>100?C.warning:C.text),
   );
   m.append(g);
+  if(D.dateHint || H(D).has('gps_lat')){
+    sectionTitle(m,'Weather (that day)');
+    const wx=el('div','kpis'); m.append(wx);
+    const wnote=el('div','hint'); wnote.style.margin='4px 2px 0'; m.append(wnote);
+    renderWeather(D, wx, wnote);
+  }
   sectionTitle(m,'Auto-flags');
   const flags=computeFlags(D);
   const fc=el('div','flags');
