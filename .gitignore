@@ -4,6 +4,9 @@ bin/
 # Third-party reference app — separate project (KacperKozak/vesc-app-poc), not ours to publish
 vesc-app-poc-dev/
 
+# Third-party Refloat firmware source — local reference only (GPL, upstream repo), not ours to publish
+refloat-main/
+
 # Local Claude Code settings (machine-specific)
 .claude/
 
