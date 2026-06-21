@@ -113,6 +113,27 @@ function computeAlerts(d){
   }
   return out;
 }
+/* derive ride dynamics from orientation angles when raw IMU is absent
+   (Float Control logs only Pitch/Roll/True Pitch, no acc/gyro). pitch_rate
+   ≈ gyro Y, roll_rate ≈ gyro X via central difference; gaps (>3s) skipped. */
+function deriveDynamics(d){
+  const t=d.t, n=d.n;
+  const haveGyro = d.col.gyro_z && d.col.gyro_z.some(v=>v!=null);
+  if(haveGyro) return;                       // raw IMU present — nothing to proxy
+  const rate = src => { const a=d.col[src]; if(!a || !a.some(v=>v!=null)) return null;
+    const out=new Array(n).fill(null);
+    for(let i=1;i<n-1;i++){ const p=a[i-1], q=a[i+1], dt=t[i+1]-t[i-1];
+      if(p==null||q==null||!(dt>0)||dt>3) continue; out[i]=(q-p)/dt; }
+    return out; };
+  const pr=rate('pitch_deg'), rr=rate('roll_deg');
+  if(pr) d.col.pitch_rate=pr;
+  if(rr) d.col.roll_rate=rr;
+  if(pr||rr){ const ar=new Array(n).fill(null);
+    for(let i=0;i<n;i++){ const a=pr?pr[i]:null, b=rr?rr[i]:null;
+      if(a==null&&b==null) continue; ar[i]=Math.hypot(a||0,b||0); }
+    d.col.ang_rate=ar;
+  }
+}
 /* derive ride date/time from a Float Control filename (…_YYYYMMDDHHMMSS.csv) */
 function parseDateFromName(name){
   const m=String(name||'').match(/(\d{4})(\d{2})(\d{2})(\d{2})?(\d{2})?(\d{2})?/);
@@ -200,7 +221,7 @@ function importCSV(text, name, forced, meta){
   const dn = parseDateFromName(name);
   d.dateHint = (meta&&meta.date) || (dn&&dn.date) || null;
   d.timeHint = (meta&&meta.time) || (dn&&dn.time) || null;
-  d.csvText = text; d.alerts = computeAlerts(d); D = d; renderSidebar(); render(VIEW);
+  d.csvText = text; d.alerts = computeAlerts(d); deriveDynamics(d); D = d; renderSidebar(); render(VIEW);
 }
 function loadCSV(text, name) { importCSV(text, name); }   // auto-detect (drag-drop, sample, history)
 
@@ -522,33 +543,62 @@ function viewBattery() {
 
 function viewImu() {
   const m=clearMain(); topbar(m,'Balance / IMU','ride dynamics');
+  const rawImu = has('acc_z') || has('gyro_z');
+  const derived = !rawImu && (has('pitch_rate') || has('roll_rate'));
 
-  // ride-dynamics KPIs: lean + hard landings
   sectionTitle(m,'Dynamics');
   const g=el('div','kpis');
   const leanMax=Math.max(Math.abs(mx('roll_deg')), Math.abs(mn('roll_deg')));
-  const gMax=mx('acc_z');
-  // collect landing events (acc_z spikes), ranked
-  const landings=[];
-  if(has('acc_z')){ const a=D.col.acc_z; let cool=0;
-    for(let i=0;i<D.n;i++){ if(a[i]!=null && a[i]>2.0 && cool<=0){ landings.push({t:D.t[i],g:a[i]}); cool=8; } if(cool>0)cool--; } }
-  landings.sort((x,y)=>y.g-x.g);
-  g.append(
-    kpi('Max lean', leanMax.toFixed(0),'°','roll', leanMax>40?C.warning:C.text),
-    kpi('Hard landings', String(landings.length),'', '>2.0 g', landings.length?C.warning:C.gps),
-    kpi('Peak impact', landings.length?landings[0].g.toFixed(2):gMax.toFixed(2),'g', landings.length?('@'+fmtTime(landings[0].t)):'', gMax>3?C.error:C.text),
-    kpi('Max gyro', Math.max(Math.abs(mx('gyro_z')),Math.abs(mn('gyro_z'))).toFixed(0),'°/s','yaw rate'),
-  );
-  m.append(g);
-  if(landings.length){
-    sectionTitle(m,'Hardest landings');
-    const tbl=el('table','cfgtable');
-    tbl.innerHTML='<tr><th>#</th><th>time</th><th>impact (g)</th></tr>';
-    landings.slice(0,8).forEach((l,i)=>{ const tr=el('tr');
-      tr.innerHTML=`<td class="mono">${i+1}</td><td class="mono">${fmtTime(l.t)}</td>`+
-        `<td class="num mono" style="color:${l.g>3?C.error:C.warning}">${l.g.toFixed(2)}</td>`;
-      tbl.append(tr); });
-    m.append(tbl);
+
+  if(rawImu){
+    const gMax=mx('acc_z');
+    const landings=[];
+    if(has('acc_z')){ const a=D.col.acc_z; let cool=0;
+      for(let i=0;i<D.n;i++){ if(a[i]!=null && a[i]>2.0 && cool<=0){ landings.push({t:D.t[i],g:a[i]}); cool=8; } if(cool>0)cool--; } }
+    landings.sort((x,y)=>y.g-x.g);
+    g.append(
+      kpi('Max lean', leanMax.toFixed(0),'°','roll', leanMax>40?C.warning:C.text),
+      kpi('Hard landings', String(landings.length),'', '>2.0 g', landings.length?C.warning:C.gps),
+      kpi('Peak impact', landings.length?landings[0].g.toFixed(2):gMax.toFixed(2),'g', landings.length?('@'+fmtTime(landings[0].t)):'', gMax>3?C.error:C.text),
+      kpi('Max gyro', Math.max(Math.abs(mx('gyro_z')),Math.abs(mn('gyro_z'))).toFixed(0),'°/s','yaw rate'),
+    );
+    m.append(g);
+    if(landings.length){
+      sectionTitle(m,'Hardest landings');
+      const tbl=el('table','cfgtable'); tbl.innerHTML='<tr><th>#</th><th>time</th><th>impact (g)</th></tr>';
+      landings.slice(0,8).forEach((l,i)=>{ const tr=el('tr');
+        tr.innerHTML=`<td class="mono">${i+1}</td><td class="mono">${fmtTime(l.t)}</td>`+
+          `<td class="num mono" style="color:${l.g>3?C.error:C.warning}">${l.g.toFixed(2)}</td>`; tbl.append(tr); });
+      m.append(tbl);
+    }
+  } else if(derived){
+    const prMax=Math.max(Math.abs(mx('pitch_rate')), Math.abs(mn('pitch_rate')));
+    const rrMax=Math.max(Math.abs(mx('roll_rate')),  Math.abs(mn('roll_rate')));
+    const spikes=[]; if(has('ang_rate')){ const a=D.col.ang_rate; let cool=0;
+      for(let i=0;i<D.n;i++){ if(a[i]!=null && a[i]>40 && cool<=0){ spikes.push({t:D.t[i],r:a[i]}); cool=4; } if(cool>0)cool--; } }
+    spikes.sort((x,y)=>y.r-x.r);
+    g.append(
+      kpi('Max lean', leanMax.toFixed(0),'°','roll', leanMax>40?C.warning:C.text),
+      kpi('Max pitch rate', prMax.toFixed(0),'°/s','≈ gyro Y (derived)', C.wheel),
+      kpi('Max roll rate', rrMax.toFixed(0),'°/s','≈ gyro X (derived)', C.warning),
+      kpi('Rate spikes', String(spikes.length),'', '>40°/s · proxy', spikes.length?C.warning:C.gps),
+    );
+    m.append(g);
+    const note=el('div','hint'); note.style.margin='-4px 2px 6px';
+    note.innerHTML='No raw accel/gyro here (Float Control import) — showing <b>derived</b> pitch/roll rates from angles. Raw 6-axis IMU comes only from Cardputer logs.';
+    m.append(note);
+    if(spikes.length){
+      sectionTitle(m,'Sharpest corrections (proxy)');
+      const tbl=el('table','cfgtable'); tbl.innerHTML='<tr><th>#</th><th>time</th><th>angular rate (°/s)</th></tr>';
+      spikes.slice(0,8).forEach((s,i)=>{ const tr=el('tr');
+        tr.innerHTML=`<td class="mono">${i+1}</td><td class="mono">${fmtTime(s.t)}</td>`+
+          `<td class="num mono" style="color:${s.r>80?C.error:C.warning}">${s.r.toFixed(0)}</td>`; tbl.append(tr); });
+      m.append(tbl);
+    }
+  } else {
+    g.append(kpi('Max lean', leanMax.toFixed(0),'°','roll', leanMax>40?C.warning:C.text));
+    m.append(g);
+    const note=el('div','hint'); note.textContent='No accelerometer/gyroscope or pitch/roll data in this session.'; m.append(note);
   }
 
   sectionTitle(m,'Charts');
@@ -564,16 +614,23 @@ function viewImu() {
     {label:'brake-tilt',col:'braketilt_deg',color:C.warning,dec:2},
     {label:'remote',col:'remotetilt_deg',color:C.highlight,dec:2},
   ]);
-  makeChart(m,'Accelerometer (g)',[
-    {label:'acc X',col:'acc_x',color:C.warning,dec:2},
-    {label:'acc Y',col:'acc_y',color:C.wheel,dec:2},
-    {label:'acc Z',col:'acc_z',color:C.target,dec:2},
-  ]);
-  makeChart(m,'Gyroscope (°/s)',[
-    {label:'gyro X',col:'gyro_x',color:C.warning,dec:1},
-    {label:'gyro Y',col:'gyro_y',color:C.wheel,dec:1},
-    {label:'gyro Z',col:'gyro_z',color:C.target,dec:1},
-  ]);
+  if(rawImu){
+    makeChart(m,'Accelerometer (g)',[
+      {label:'acc X',col:'acc_x',color:C.warning,dec:2},
+      {label:'acc Y',col:'acc_y',color:C.wheel,dec:2},
+      {label:'acc Z',col:'acc_z',color:C.target,dec:2},
+    ]);
+    makeChart(m,'Gyroscope (°/s)',[
+      {label:'gyro X',col:'gyro_x',color:C.warning,dec:1},
+      {label:'gyro Y',col:'gyro_y',color:C.wheel,dec:1},
+      {label:'gyro Z',col:'gyro_z',color:C.target,dec:1},
+    ]);
+  } else if(derived){
+    makeChart(m,'Pitch / roll rate (derived ≈ gyro)',[
+      {label:'pitch rate',col:'pitch_rate',color:C.wheel,dec:1},
+      {label:'roll rate',col:'roll_rate',color:C.warning,dec:1},
+    ]);
+  }
   makeChart(m,'Footpads (ADC)',[
     {label:'adc1',col:'adc1',color:C.gps,dec:2},
     {label:'adc2',col:'adc2',color:C.teal,dec:2},
