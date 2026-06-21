@@ -427,6 +427,7 @@ function viewOverview() {
   const m=clearMain(); topbar(m, 'Overview', D.name);
   alertStrip(m);
   const dur=D.t[D.n-1]||0, dist=distanceKm(), wh=last('watt_hours');
+  const NV=(k,dflt)=>(typeof norm==='function'?norm(k).value:dflt);   // resolved threshold (config→reference)
   sectionTitle(m,'Session');
   const g=el('div','kpis');
   g.append(
@@ -434,14 +435,14 @@ function viewOverview() {
     kpi('Distance', dist.toFixed(2), 'km'),
     kpi('Top speed', mx('speed_kmh').toFixed(1), 'km/h', null, C.warning),
     kpi('Avg speed', avg('speed_kmh').toFixed(1), 'km/h'),
-    kpi('Peak duty', mx('duty_pct').toFixed(0), '%', null, mx('duty_pct')>90?C.error:C.highlight),
+    kpi('Peak duty', mx('duty_pct').toFixed(0), '%', null, mx('duty_pct')>NV('duty_crit',90)?C.error:C.highlight),
     kpi('Max A in', mx('curr_in_A').toFixed(0), 'A', null, C.wheel),
     kpi('Energy', wh.toFixed(0), 'Wh', dist>0?`${(wh/dist).toFixed(1)} Wh/km`:'', C.teal),
-    kpi('Max FET', mx('temp_fet_C').toFixed(0), '°C', null, mx('temp_fet_C')>70?C.error:C.text),
+    kpi('Max FET', mx('temp_fet_C').toFixed(0), '°C', null, mx('temp_fet_C')>NV('fet_warn',70)?C.error:C.text),
     kpi('Max motor', mx('temp_mot_C').toFixed(0), '°C'),
     kpi('Max batt', has('temp_bat_C')&&mx('temp_bat_C')>0?mx('temp_bat_C').toFixed(0):'–', '°C'),
     kpi('Min cell', has('cell_min')?mn('cell_min').toFixed(3):(last('vcell_V')||0).toFixed(3), 'V', null, C.bran),
-    kpi('Cell Δ max', has('cell_delta_mV')?mx('cell_delta_mV').toFixed(0):'–', 'mV', null, mx('cell_delta_mV')>100?C.warning:C.text),
+    kpi('Cell Δ max', has('cell_delta_mV')?mx('cell_delta_mV').toFixed(0):'–', 'mV', null, mx('cell_delta_mV')>NV('imbal_warn',100)?C.warning:C.text),
   );
   m.append(g);
   if(D.dateHint || H(D).has('gps_lat')){
@@ -454,8 +455,9 @@ function viewOverview() {
   const flags=computeFlags(D);
   const fc=el('div','flags');
   if(!flags.length){ const f=el('div','flag ok'); f.innerHTML=`<span class="ico">✓</span><div><div class="t">No issues detected</div><div class="d">duty, temps, balance and faults all nominal</div></div>`; fc.append(f); }
+  const tag = fl => (fl.src && typeof tierTag==='function') ? ' '+tierTag(fl.tier, fl.src) : '';
   flags.forEach(fl=>{ const f=el('div','flag sev-'+fl.sev); f.innerHTML=
-    `<span class="ico">${fl.ico}</span><div><div class="t">${fl.title}</div><div class="d">${fl.detail}</div></div><div class="when">${fl.when}</div>`;
+    `<span class="ico">${fl.ico}</span><div><div class="t">${fl.title}</div><div class="d">${fl.detail}${tag(fl)}</div></div><div class="when">${fl.when}</div>`;
     f.onclick=()=>switchView('timeline'); fc.append(f); });
   m.append(fc);
 }
@@ -602,23 +604,34 @@ function computeFlags(d) {
   const h = H(d), col = d.col, t = d.t, n = d.n;
   const firstWhen = pred => { for(let i=0;i<n;i++) if(pred(i)) return fmtTime(t[i]); return ''; };
   const countIf = pred => { let k=0; for(let i=0;i<n;i++) if(pred(i)) k++; return k; };
+  // thresholds + provenance from the norm resolver (device config first, else reference)
+  const N = (typeof norm==='function') ? norm : (()=>({value:null,tier:'',source:''}));
   const f=[];
-  const duty=col.duty_pct, fet=col.temp_fet_C, delta=col.cell_delta_mV,
-        fault=col.fault, accz=col.acc_z, vmin=col.cell_min;
-  if(duty){ const dHi=countIf(i=>duty[i]>90);
-    if(dHi) f.push({sev:h.mx('duty_pct')>=96?'err':'warn',ico:'!',title:`Duty cycle over 90% (${dHi}×)`,
-      detail:`peak ${h.mx('duty_pct').toFixed(0)}% — approaching the limit`, when:firstWhen(i=>duty[i]>90)}); }
-  if(fet){ const fHot=countIf(i=>fet[i]>70);
-    if(fHot) f.push({sev:h.mx('temp_fet_C')>85?'err':'warn',ico:'▲',title:`Controller hot (max ${h.mx('temp_fet_C').toFixed(0)}°C)`,
-      detail:`${fHot} samples over 70°C — check thermal headroom / l_temp_fet`, when:firstWhen(i=>fet[i]>70)}); }
-  if(delta){ const dm=h.mx('cell_delta_mV'); if(dm>100) f.push({sev:dm>200?'err':'warn',ico:'≠',title:`Cell imbalance ${dm.toFixed(0)} mV`,
-    detail:'pack drifting — consider a balance charge', when:firstWhen(i=>delta[i]>100)}); }
+  const duty=col.duty_pct, fet=col.temp_fet_C, mot=col.temp_mot_C, delta=col.cell_delta_mV,
+        fault=col.fault, accz=col.acc_z, vmin=col.cell_min, bt=col.temp_bat_C;
+  if(duty){ const w=N('duty_warn'), cr=N('duty_crit'); const dHi=countIf(i=>duty[i]>w.value);
+    if(dHi){ const peak=h.mx('duty_pct'); f.push({sev:peak>=cr.value?'err':'warn',ico:'!',
+      title:`Duty over ${w.value}% (${dHi}×)`, detail:`peak ${peak.toFixed(0)}% · critical ${cr.value}%`,
+      when:firstWhen(i=>duty[i]>w.value), src:w.source, tier:w.tier}); } }
+  if(fet){ const w=N('fet_warn'), cr=N('fet_crit'); const fHot=countIf(i=>fet[i]>w.value);
+    if(fHot){ const mxf=h.mx('temp_fet_C'); f.push({sev:mxf>cr.value?'err':'warn',ico:'▲',
+      title:`Controller hot (max ${mxf.toFixed(0)}°C)`, detail:`${fHot} samples over ${w.value}°C`,
+      when:firstWhen(i=>fet[i]>w.value), src:w.source, tier:w.tier}); } }
+  if(mot){ const w=N('mot_warn'); const mHot=countIf(i=>mot[i]>w.value);
+    if(mHot) f.push({sev:'warn',ico:'▲',title:`Motor hot (max ${h.mx('temp_mot_C').toFixed(0)}°C)`,
+      detail:`${mHot} samples over ${w.value}°C`, when:firstWhen(i=>mot[i]>w.value), src:w.source, tier:w.tier}); }
+  if(bt && h.mx('temp_bat_C')>0){ const w=N('batt_warn'), cr=N('batt_crit'); const bHot=countIf(i=>bt[i]>w.value);
+    if(bHot) f.push({sev:h.mx('temp_bat_C')>cr.value?'err':'warn',ico:'▲',title:`Battery warm (max ${h.mx('temp_bat_C').toFixed(0)}°C)`,
+      detail:`over ${w.value}°C`, when:firstWhen(i=>bt[i]>w.value), src:w.source, tier:w.tier}); }
+  if(delta){ const w=N('imbal_warn'), cr=N('imbal_crit'); const dm=h.mx('cell_delta_mV');
+    if(dm>w.value) f.push({sev:dm>cr.value?'err':'warn',ico:'≠',title:`Cell imbalance ${dm.toFixed(0)} mV`,
+      detail:`over ${w.value} mV — consider a balance charge`, when:firstWhen(i=>delta[i]>w.value), src:w.source, tier:w.tier}); }
   if(fault){ const fc=countIf(i=>fault[i]>0); if(fc) f.push({sev:'err',ico:'✕',title:`Fault code raised`,
-    detail:`mc_fault active in ${fc} samples`, when:firstWhen(i=>fault[i]>0)}); }
-  if(accz){ const land=countIf(i=>accz[i]>2.2); if(land) f.push({sev:'info',ico:'↓',title:`${land} hard landing(s)`,
-    detail:`acc Z spiked over 2.2g`, when:firstWhen(i=>accz[i]>2.2)}); }
-  if(vmin){ const lv=h.mn('cell_min'); if(lv>0&&lv<3.3) f.push({sev:'warn',ico:'▽',title:`Low cell ${lv.toFixed(3)} V`,
-    detail:'a cell dipped under 3.3V — reduce load / charge', when:firstWhen(i=>vmin[i]<3.3)}); }
+    detail:`mc_fault active in ${fc} samples`, when:firstWhen(i=>fault[i]>0), src:'VESC firmware', tier:'firmware'}); }
+  if(accz){ const w=N('landing_g'); const land=countIf(i=>accz[i]>w.value); if(land) f.push({sev:'info',ico:'↓',title:`${land} hard landing(s)`,
+    detail:`acc Z over ${w.value}g`, when:firstWhen(i=>accz[i]>w.value), src:w.source, tier:w.tier}); }
+  if(vmin){ const w=N('cell_warn'); const lv=h.mn('cell_min'); if(lv>0&&lv<w.value) f.push({sev:'warn',ico:'▽',title:`Low cell ${lv.toFixed(3)} V`,
+    detail:`under ${w.value}V — reduce load / charge`, when:firstWhen(i=>vmin[i]<w.value), src:w.source, tier:w.tier}); }
   return f;
 }
 
