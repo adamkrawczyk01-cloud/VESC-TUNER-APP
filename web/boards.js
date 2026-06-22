@@ -46,7 +46,7 @@ async function renderBoards(){
     const card = el('div','board');
     const bh = el('div','board-name');
     bh.innerHTML = `<span class="bdot"></span><b>${b.name}</b>` + (b.note?`<span class="bnote">${b.note}</span>`:'');
-    const plus = el('button','board-csv'); plus.textContent='＋ CSV'; plus.title='Add a CSV to this board';
+    const plus = el('button','board-csv'); plus.textContent='＋ CSV'; plus.title='Add a CSV (select its mcconf.bin too for full config) to this board';
     plus.onclick = ()=> addCsvToBoard(b.id);
     bh.append(plus); card.append(bh);
 
@@ -62,7 +62,7 @@ async function renderBoards(){
         a.target='_blank'; a.title='Ride assessment'; a.onclick=e=>e.stopPropagation(); row.append(a); }
       list.append(row); });
     mine.forEach(r => list.append(rideRow({ name:r.name, sub:fmtRideMeta(r), key:'idb:'+r.name },
-      ()=> { BOARDS_LOADED='idb:'+r.name; loadCSV(r.csv, r.name); switchView('overview'); renderBoards(); },
+      ()=> { BOARDS_LOADED='idb:'+r.name; if(r.cfg) CFG.mcconf=r.cfg; loadCSV(r.csv, r.name); switchView('overview'); renderBoards(); },
       async()=> { if(confirm('Remove '+r.name+' from '+b.id+'?')){ await idbDel(r.name); renderBoards(); } })));
     card.append(list); host.append(card);
   }
@@ -116,27 +116,28 @@ function addCsvToBoard(boardId){
 }
 function wireBoardFile(){
   const inp = $('#board-file'); if(!inp) return;
-  inp.onchange = e => {
-    const f = e.target.files[0]; const board = BOARD_TARGET; BOARD_TARGET=null;
-    if(!f || !board) return;
-    const r = new FileReader();
-    r.onload = async () => {
-      const text = r.result;
-      // load into the dashboard (auto-detects Cardputer vs Float Control)
-      importCSV(text, f.name, null);
-      // persist under this board (only if it parsed into the active dataset D)
-      if(D && D.csvText){
-        try{
-          const metrics = (typeof sessionMetrics==='function') ? sessionMetrics(D) : {};
-          await idbPut({ name:D.name, csv:text, board, savedAt:Date.now(), metrics });
-          BOARDS_LOADED = 'idb:'+D.name;
-        }catch(err){ alert('Loaded, but could not save to this browser: '+err.message); }
-      }
-      switchView('overview');
-      renderBoards();
-    };
-    r.readAsText(f);
+  inp.onchange = async e => {
+    const files = [...e.target.files]; const board = BOARD_TARGET; BOARD_TARGET=null;
     e.target.value='';
+    if(!files.length || !board) return;
+    const csvF = files.find(f=>/\.(csv|txt)$/i.test(f.name)) || files[0];
+    const binF = files.find(f=>/\.bin$/i.test(f.name));   // optional paired mcconf.bin
+    const readText = f => new Promise(res=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.readAsText(f); });
+    const readBin  = f => new Promise(res=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.readAsArrayBuffer(f); });
+    const text = await readText(csvF);
+    let cfg = null;
+    if(binF && typeof decodeMcconfBin==='function'){ try{ cfg = decodeMcconfBin(await readBin(binF)); }catch(err){} }
+    importCSV(text, csvF.name, null);
+    if(cfg) CFG.mcconf = cfg;            // real config from the paired mcconf.bin
+    if(D && D.csvText){
+      try{
+        const metrics = (typeof sessionMetrics==='function') ? sessionMetrics(D) : {};
+        await idbPut({ name:D.name, csv:text, board, savedAt:Date.now(), metrics, cfg });
+        BOARDS_LOADED = 'idb:'+D.name;
+      }catch(err){ alert('Loaded, but could not save to this browser: '+err.message); }
+    }
+    switchView('overview');
+    renderBoards();
   };
 }
 
