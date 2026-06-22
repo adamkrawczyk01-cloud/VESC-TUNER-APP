@@ -1936,7 +1936,7 @@ static void drawRide() {
         canvas.setTextSize(1); canvas.setTextDatum(TC_DATUM); canvas.setTextColor(C_GREY);
         canvas.drawString(lab, x + w / 2, 85);
         char b[8]; if (has) snprintf(b, sizeof(b), "%d", (int)t); else snprintf(b, sizeof(b), "--");
-        canvas.setTextSize(2); canvas.setTextColor(has ? tempColor(t) : C_DGREY);
+        canvas.setTextSize(2); canvas.setTextColor(has ? C_WHITE : C_DGREY);   // white = readable on the dark tile
         canvas.drawString(b, x + w / 2, 94);
         canvas.setTextSize(1); canvas.setTextDatum(TL_DATUM);
     };
