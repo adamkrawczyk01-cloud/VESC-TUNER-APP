@@ -277,6 +277,7 @@ static bool     gChargeAlarm = false;
 static bool     gChargeDismissed = false;
 static uint32_t gChargeBeepMs = 0;
 static bool     gChargeBeep2 = false;
+static int      gChargePingStep = -1;    // last 0.1V step pinged on the run-up to full
 static uint32_t gLastBmsMs = 0;
 static uint32_t gLastSetupMs = 0;
 static uint32_t gLastImuMs = 0;
@@ -2578,11 +2579,27 @@ void setup() {
 static void checkChargeAlarm() {
     if (!gV.valid || gV.voltage < 1.f) { gChargeAlarm = false; return; }
     int cells = (gProfile.batt_cells >= 4 && gProfile.batt_cells <= 32) ? gProfile.batt_cells : N_CELLS_DEF;
-    float full = cells * 4.2f;
-    if (gV.voltage >= full - 0.2f) {                 // ~100%
+    float full    = cells * 4.2f;        // 100%  (84.0 V on 20S)
+    float pingLow = full - 1.0f;         // start of the run-up window (83.0 V)
+
+    // re-arm everything once we drop back below the window (next charge alerts again)
+    if (gV.voltage < pingLow - 0.1f) {
+        gChargePingStep = -1; gChargeAlarm = false; gChargeDismissed = false;
+    }
+
+    // run-up pings: one short "ping" per ascending 0.1V step, 83.1 … 83.9 V
+    if (gV.voltage >= pingLow && gV.voltage < full - 0.05f) {
+        int step = (int)floorf((gV.voltage - pingLow) / 0.1f + 0.001f);   // 0..9
+        if (step > gChargePingStep) {
+            gChargePingStep = step;
+            if (step >= 1) M5Cardputer.Speaker.tone(3136, 70);            // single ping (G7)
+        }
+    }
+
+    // full (~100%): continuous two-note bell + banner until any key dismisses it
+    if (gV.voltage >= full - 0.05f) {
         if (!gChargeDismissed) gChargeAlarm = true;
-    } else if (gV.voltage < full - 1.0f) {           // hysteresis → re-arm
-        gChargeAlarm = false; gChargeDismissed = false;
+        if (gChargePingStep < 10) gChargePingStep = 10;
     }
     if (gChargeAlarm && !gChargeDismissed) {
         uint32_t now = millis(), dt = now - gChargeBeepMs;
