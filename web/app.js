@@ -136,6 +136,24 @@ function deriveDynamics(d){
     d.col.ang_rate=ar;
   }
 }
+/* physically-impossible sensor values (BMS/odometer glitches) → null, so KPIs,
+   flags, charts and the assessment never show garbage like 259°C / -29V / 58119mV. */
+const SANE = {
+  voltage_V:[0,200], vcell_V:[0,5], bms_v_tot:[0,200],
+  temp_fet_C:[-40,150], temp_mot_C:[-40,150], temp_bat_C:[-40,150],
+  cell_min:[2,5], cell_max:[2,5], cell_delta_mV:[0,2000],
+  curr_in_A:[-2000,2000], curr_mot_A:[-2000,2000], iq_A:[-2000,2000], id_A:[-2000,2000],
+  speed_kmh:[-5,150], duty_pct:[-110,110], rpm:[-200000,200000],
+};
+function sanitize(d){
+  const bound=(name,lo,hi)=>{ const a=d.col[name]; if(!a) return;
+    for(let i=0;i<a.length;i++){ const v=a[i]; if(v!=null && (v<lo||v>hi)) a[i]=null; } };
+  for(const k in SANE) bound(k, SANE[k][0], SANE[k][1]);
+  for(const f of (d.fields||[])){ if(/^cell_\d+$/.test(f)) bound(f,2,5); if(/^bms_temp_\d+$/.test(f)) bound(f,-40,150); }
+  // odometer spike rejection: null lone samples that jump >2 km from BOTH neighbours
+  const o=d.col.odo_km; if(o){ for(let i=1;i<d.n-1;i++){
+    if(o[i]!=null && o[i-1]!=null && o[i+1]!=null && Math.abs(o[i]-o[i-1])>2 && Math.abs(o[i]-o[i+1])>2) o[i]=null; } }
+}
 /* SOC from pack voltage (3.0–4.2 V/cell), independent of the unreliable VESC
    battery_level (batt_pct, which saturates at 100% on a wrong cell count).
    cells inferred from peak voltage; matches the Cardputer HUD logic. */
@@ -237,6 +255,7 @@ function importCSV(text, name, forced, meta){
   const dn = parseDateFromName(name);
   d.dateHint = (meta&&meta.date) || (dn&&dn.date) || null;
   d.timeHint = (meta&&meta.time) || (dn&&dn.time) || null;
+  sanitize(d);   // drop impossible sensor glitches before anything reads the data
   d.csvText = text; d.alerts = computeAlerts(d); deriveDynamics(d); deriveSOC(d); D = d; XRANGE=null; renderSidebar(); render(VIEW);
 }
 function loadCSV(text, name) { importCSV(text, name); }   // auto-detect (drag-drop, sample, history)
@@ -254,7 +273,7 @@ function H(d){
   const p = (n,q) => { const a=c(n).filter(v=>v!=null).sort((x,y)=>x-y); if(!a.length) return 0;
     return a[Math.min(a.length-1, Math.floor(q*(a.length-1)))]; };
   const distanceKm = () => {
-    if (has('odo_km')) { const first=c('odo_km').find(v=>v!=null)||0; const dd=last('odo_km')-first; if(dd>0) return dd; }
+    if (has('odo_km')) { const first=c('odo_km').find(v=>v!=null)||0; const dd=last('odo_km')-first; if(dd>0 && dd<1000) return dd; }
     let dd=0; const s=c('speed_kmh'), t=d.t;
     for (let i=1;i<d.n;i++) if(s[i]!=null) dd += s[i]*(t[i]-t[i-1])/3600;
     return dd;
