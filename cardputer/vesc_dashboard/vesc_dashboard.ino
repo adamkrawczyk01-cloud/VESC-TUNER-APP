@@ -1874,10 +1874,16 @@ static void drawRide() {
     // battery footer
     canvas.fillRect(0, 121, DW, 14, C_FOOT);
     canvas.drawFastHLine(0, 121, DW, C_PANEL);
+    // SOC from measured pack voltage (profile range). The VESC's battery_level
+    // (gV.batt_pct) is unreliable on this setup — a wrong cell count in the VESC
+    // config saturates it at 100% (e.g. 72.9V reported as full) — so trust the
+    // measured voltage; fall back to battery_level only if voltage is invalid.
     float soc;
-    if (gV.setup && gV.batt_pct > 0) soc = constrain(gV.batt_pct / 100.f, 0.f, 1.f);
-    else soc = gV.valid ? constrain((gV.voltage - gProfile.batt_min_v) /
-               (gProfile.batt_max_v - gProfile.batt_min_v), 0.f, 1.f) : 0;
+    if (gV.valid && gProfile.batt_max_v > gProfile.batt_min_v)
+        soc = constrain((gV.voltage - gProfile.batt_min_v) /
+                        (gProfile.batt_max_v - gProfile.batt_min_v), 0.f, 1.f);
+    else
+        soc = (gV.setup && gV.batt_pct > 0) ? constrain(gV.batt_pct / 100.f, 0.f, 1.f) : 0;
     char bp[8]; snprintf(bp, sizeof(bp), "%d%%", (int)(soc * 100));
     canvas.setTextColor(C_VOLT); canvas.setTextDatum(ML_DATUM); canvas.drawString(bp, 3, 128);
     int bx = 32, bw = 148, by = 125, bh = 6;
