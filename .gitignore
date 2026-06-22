@@ -23,3 +23,6 @@ build/
 
 # Scratch
 analysis/
+
+# but DO ship decoded-config blobs for the web app
+!web/rides/*.bin

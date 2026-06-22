@@ -169,7 +169,8 @@ function viewNorms(){
       const tbl=el('table','cfgtable');
       tbl.innerHTML='<tr><th>parameter</th><th>current</th><th>typical range</th><th>edit</th><th>effect</th></tr>';
       grp.items.forEach(p=>{ const cur=(typeof paramCurrent==='function')?paramCurrent(p.k):{v:null};
-        const curStr = cur.v!=null ? `${cur.v}${p.u||''} <span class="src">${cur.src}</span>` : '—';
+        const named = (p.enumNames && Number.isInteger(cur.v) && p.enumNames[cur.v]!=null);
+        const curStr = cur.v!=null ? `${named?p.enumNames[cur.v]:cur.v}${named?'':(p.u||'')} <span class="src">${cur.src}</span>` : '—';
         const rng = p.range ? `${p.range[0]}…${p.range[1]}${p.u||''}` : 'detected';
         const tr=el('tr'); tr.title=p.path;
         tr.innerHTML=`<td>${p.n}<div class="vtkey">${p.k}</div></td>`+

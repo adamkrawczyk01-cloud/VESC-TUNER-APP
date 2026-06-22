@@ -43,7 +43,7 @@ const VT_PARAMS = [
     {k:'foc_motor_r',          n:'Motor Resistance',      u:'mΩ',  scale:1000,  path:'Motor Cfg → FOC → General (Detect)', range:null, tier:'ro',     eff:'From detection. Wrong value → low-speed chatter / heat.'},
     {k:'foc_motor_l',          n:'Motor Inductance',      u:'µH',  scale:1e6,   path:'Motor Cfg → FOC → General (Detect)', range:null, tier:'ro',     eff:'From detection. Affects current-loop & observer.'},
     {k:'foc_motor_flux_linkage',n:'Flux Linkage',         u:'mWb', scale:1000,  path:'Motor Cfg → FOC → General (Detect)', range:null, tier:'ro',     eff:'From detection. Off value = #1 cause of low-speed crunch.'},
-    {k:'foc_observer_type',    n:'Observer Type',         u:'',    path:'Motor Cfg → FOC → General',          range:null, tier:'manual', eff:'Ortega vs MXLEMMING. MXLEMMING usually kills low-speed chatter.'},
+    {k:'foc_observer_type',    n:'Observer Type',         u:'', enumNames:['Ortega original','MXLEMMING','MXLEMMING λ-comp','Ortega λ-comp'], path:'Motor Cfg → FOC → General', range:null, tier:'manual', eff:'Observer algorithm — changing it often fixes low-speed chatter.'},
     {k:'foc_observer_gain',    n:'Observer Gain',         u:'',    path:'Motor Cfg → FOC → General',          range:null, tier:'manual', eff:'Position-estimate tracking. Too high = hunting/chatter at low speed.'},
     {k:'foc_openloop_rpm',     n:'Openloop ERPM',         u:'erpm',path:'Motor Cfg → FOC → Sensorless',       range:[0,2000], tier:'manual', eff:'How long it stays open-loop before handing to the observer.'},
     {k:'foc_sl_erpm',          n:'Sensorless ERPM',       u:'erpm',path:'Motor Cfg → FOC → Sensorless',       range:[500,5000], tier:'manual', eff:'Open-loop → sensorless handoff. The noisy zone for chatter.'},
@@ -54,6 +54,59 @@ const VT_PARAMS = [
     {k:'tiltback_duty',     n:'Tiltback Duty',            u:'%', path:'App Cfg → Float → Tune', range:[60,90], tier:'manual', eff:'Duty where pushback engages. Your duty-Geiger limit.'},
   ]},
 ];
+
+// Exact VESC mcconf serialize layout (confgenerator_serialize_mcconf, fw 6.06).
+// Type codes: u8 / f32 (float32_auto = IEEE BE) / f16:<scale> (int16 BE / scale)
+// / h8 (int8[8]). Validated against the GAD board blob (foc_observer_type @251).
+const MCCONF_SCHEMA = [
+  ['pwm_mode','u8'],['comm_mode','u8'],['motor_type','u8'],['sensor_mode','u8'],
+  ['l_current_max','f32'],['l_current_min','f32'],['l_in_current_max','f32'],['l_in_current_min','f32'],
+  ['l_in_current_map_start','f16',10000],['l_in_current_map_filter','f16',10000],
+  ['l_abs_current_max','f32'],['l_min_erpm','f32'],['l_max_erpm','f32'],
+  ['l_erpm_start','f16',10000],['l_max_erpm_fbrake','f32'],['l_max_erpm_fbrake_cc','f32'],
+  ['l_min_vin','f16',10],['l_max_vin','f16',10],['l_battery_cut_start','f16',10],['l_battery_cut_end','f16',10],
+  ['l_battery_regen_cut_start','f16',10],['l_battery_regen_cut_end','f16',10],['l_slow_abs_current','u8'],
+  ['l_temp_fet_start','u8'],['l_temp_fet_end','u8'],['l_temp_motor_start','u8'],['l_temp_motor_end','u8'],
+  ['l_temp_accel_dec','f16',10000],['l_min_duty','f16',10000],['l_max_duty','f16',10000],
+  ['l_watt_max','f32'],['l_watt_min','f32'],
+  ['l_current_max_scale','f16',10000],['l_current_min_scale','f16',10000],['l_duty_start','f16',10000],
+  ['sl_min_erpm','f32'],['sl_min_erpm_cycle_int_limit','f32'],['sl_max_fullbreak_current_dir_change','f32'],
+  ['sl_cycle_int_limit','f16',10],['sl_phase_advance_at_br','f16',10000],['sl_cycle_int_rpm_br','f32'],['sl_bemf_coupling_k','f32'],
+  ['hall_table','h8'],['hall_sl_erpm','f32'],
+  ['foc_current_kp','f32'],['foc_current_ki','f32'],['foc_f_zv','f32'],['foc_dt_us','f32'],
+  ['foc_encoder_inverted','u8'],['foc_encoder_offset','f32'],['foc_encoder_ratio','f32'],['foc_sensor_mode','u8'],
+  ['foc_pll_kp','f32'],['foc_pll_ki','f32'],['foc_motor_l','f32'],['foc_motor_ld_lq_diff','f32'],['foc_motor_r','f32'],['foc_motor_flux_linkage','f32'],
+  ['foc_observer_gain','f32'],['foc_observer_gain_slow','f32'],['foc_observer_offset','f16',1000],
+  ['foc_duty_dowmramp_kp','f32'],['foc_duty_dowmramp_ki','f32'],
+  ['foc_start_curr_dec','f16',10000],['foc_start_curr_dec_rpm','f32'],
+  ['foc_openloop_rpm','f32'],['foc_openloop_rpm_low','f16',1000],
+  ['foc_d_gain_scale_start','f16',1000],['foc_d_gain_scale_max_mod','f16',1000],
+  ['foc_sl_openloop_hyst','f16',100],['foc_sl_openloop_time_lock','f16',100],['foc_sl_openloop_time_ramp','f16',100],['foc_sl_openloop_time','f16',100],
+  ['foc_sl_openloop_boost_q','f16',100],['foc_sl_openloop_max_q','f16',100],
+  ['foc_hall_table','h8'],['foc_hall_interp_erpm','f32'],
+  ['foc_sl_erpm_start','f32'],['foc_sl_erpm','f32'],
+  ['foc_control_sample_mode','u8'],['foc_current_sample_mode','u8'],['foc_sat_comp_mode','u8'],['foc_sat_comp','f16',1000],
+  ['foc_temp_comp','u8'],['foc_temp_comp_base_temp','f16',100],['foc_current_filter_const','f16',10000],
+  ['foc_cc_decoupling','u8'],['foc_observer_type','u8'],
+];
+// decode a raw COMM_GET_MCCONF blob ([cmd][sig:4][serialized…]) → {param:value}.
+// returns null if it doesn't look like an mcconf (sanity-checked on l_current_max).
+function decodeMcconfBin(buf){
+  const dv = new DataView(buf); if(dv.byteLength < 60) return null;
+  let ind = 5;                          // skip cmd(1) + signature(4)
+  const out = {};
+  for(const f of MCCONF_SCHEMA){
+    const [name,typ,scale]=f;
+    if(ind > dv.byteLength-1) break;
+    if(typ==='u8'){ out[name]=dv.getUint8(ind); ind+=1; }
+    else if(typ==='f32'){ out[name]=dv.getFloat32(ind,false); ind+=4; }
+    else if(typ==='f16'){ out[name]=dv.getInt16(ind,false)/scale; ind+=2; }
+    else if(typ==='h8'){ ind+=8; }      // hall tables — skip
+  }
+  if(!(out.l_current_max>1 && out.l_current_max<1000)) return null;   // sanity / version check
+  return out;
+}
+const FOC_OBSERVER_NAMES = ['Ortega original','MXLEMMING','MXLEMMING λ-comp','Ortega λ-comp'];
 
 // current board value for a key: loaded config (mcconf JSON / VESC Tool XML)
 // first, else the decoded GAD snapshot. Applies the display-unit scale (e.g.

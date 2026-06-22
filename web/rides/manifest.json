@@ -9,7 +9,8 @@
           "name": "GAD session 004",
           "file": "GAD_session_004.csv",
           "src": "cardputer",
-          "date": "2026-06-20"
+          "date": "2026-06-20",
+          "mcconf": "GAD_session_004_mcconf.bin"
         },
         {
           "name": "GAD Ride #17",

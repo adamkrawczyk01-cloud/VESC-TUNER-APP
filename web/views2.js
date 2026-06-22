@@ -222,6 +222,12 @@ function viewTuning(){
   const m=clearMain(); topbar(m,'Tuning loop','config snapshot · suggestions · AI report');
   const bar=el('div','cmpbar');
   bar.append(
+    btn('↑ mcconf.bin', ()=>{ const i=el('input'); i.type='file'; i.accept='.bin'; i.hidden=true;
+      i.onchange=e=>{ const f=e.target.files[0]; if(!f) return; const r=new FileReader();
+        r.onload=()=>{ const cfg=(typeof decodeMcconfBin==='function')?decodeMcconfBin(r.result):null;
+          if(cfg){ CFG.mcconf=cfg; render('tuning'); } else alert('Not a recognised mcconf.bin (wrong format/version?).'); };
+        r.readAsArrayBuffer(f); };
+      document.body.append(i); i.click(); setTimeout(()=>i.remove(),0); },'sm'),
     btn('↑ VESC Tool XML', ()=>pickFile('.xml',(t)=>{ const cfg=(typeof parseVescXML==='function')?parseVescXML(t):null;
       if(cfg && Object.keys(cfg).length){ CFG.mcconf=cfg; render('tuning'); } else alert('No parameters found in that XML.'); }),'sm'),
     btn('↑ mcconf.json', ()=>pickFile('.json',(t)=>{ CFG.mcconf=safeJSON(t); render('tuning'); }),'sm'),

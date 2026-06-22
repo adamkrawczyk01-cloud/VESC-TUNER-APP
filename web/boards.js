@@ -93,6 +93,10 @@ async function loadShipped(r){
     const text = await res.text();
     BOARDS_LOADED = 'ship:loaded:'+r.file;
     importCSV(text, r.name, r.src||null, { date:r.date, time:r.time });
+    // decode this session's raw mcconf.bin → real config values (Norms / Tuning)
+    if(r.mcconf && typeof decodeMcconfBin==='function'){
+      try{ const b=await fetch('rides/'+r.mcconf); if(b.ok){ const cfg=decodeMcconfBin(await b.arrayBuffer()); if(cfg) CFG.mcconf=cfg; } }catch(e){}
+    }
     switchView('overview');
     renderBoards();
   }catch(e){ alert('Could not load '+r.name+' ('+e.message+').\nIs rides/'+r.file+' deployed?'); }
