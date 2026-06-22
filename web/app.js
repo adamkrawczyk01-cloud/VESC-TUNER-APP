@@ -136,6 +136,20 @@ function deriveDynamics(d){
     d.col.ang_rate=ar;
   }
 }
+/* SOC from pack voltage (3.0–4.2 V/cell), independent of the unreliable VESC
+   battery_level (batt_pct, which saturates at 100% on a wrong cell count).
+   cells inferred from peak voltage; matches the Cardputer HUD logic. */
+function deriveSOC(d){
+  const V=d.col.voltage_V; if(!V || !V.some(v=>v!=null)) return;
+  let maxV=0; for(const v of V) if(v!=null && v>maxV) maxV=v;
+  const cells=Math.max(1, Math.round(maxV/4.2));
+  const vmin=cells*3.0, vmax=cells*4.2, span=vmax-vmin;
+  if(span<=0) return;
+  const out=new Array(d.n).fill(null);
+  for(let i=0;i<d.n;i++){ const v=V[i]; if(v==null||v<1) continue;
+    out[i]=Math.max(0, Math.min(100, (v-vmin)/span*100)); }
+  d.col.soc_pct=out;
+}
 /* derive ride date/time from a Float Control filename (…_YYYYMMDDHHMMSS.csv) */
 function parseDateFromName(name){
   const m=String(name||'').match(/(\d{4})(\d{2})(\d{2})(\d{2})?(\d{2})?(\d{2})?/);
@@ -223,7 +237,7 @@ function importCSV(text, name, forced, meta){
   const dn = parseDateFromName(name);
   d.dateHint = (meta&&meta.date) || (dn&&dn.date) || null;
   d.timeHint = (meta&&meta.time) || (dn&&dn.time) || null;
-  d.csvText = text; d.alerts = computeAlerts(d); deriveDynamics(d); D = d; XRANGE=null; renderSidebar(); render(VIEW);
+  d.csvText = text; d.alerts = computeAlerts(d); deriveDynamics(d); deriveSOC(d); D = d; XRANGE=null; renderSidebar(); render(VIEW);
 }
 function loadCSV(text, name) { importCSV(text, name); }   // auto-detect (drag-drop, sample, history)
 
@@ -584,12 +598,30 @@ function viewBattery() {
   makeChart(m,'Cell imbalance',[
     {label:'Δ mV',col:'cell_delta_mV',color:C.warning,dec:0},
   ]);
-  makeChart(m,'Battery % / Wh left',[
-    {label:'batt %',col:'batt_pct',color:C.gps,dec:0},
+  makeChart(m,'State of charge / Wh left',[
+    {label:'SOC % (from voltage)',col:'soc_pct',color:C.gps,dec:0},
+    {label:'VESC batt % (raw)',col:'batt_pct',color:C.muted,dec:0,dash:true},
     {label:'Wh left',col:'batt_wh',color:C.teal,scale:'y2',dec:0},
   ]);
+  if (has('batt_pct') && has('soc_pct')){
+    const note=el('div','hint'); note.style.margin='-8px 2px 8px';
+    note.textContent='SOC is computed from pack voltage (3.0–4.2 V/cell). The dashed “VESC batt %” is the firmware battery_level — unreliable (saturates at 100% on a wrong cell count), shown only for comparison.';
+    m.append(note);
+  }
   if (has('temp_bat_C') && mx('temp_bat_C')>0)
     makeChart(m,'Battery temperature',[{label:'BAT °C',col:'temp_bat_C',color:C.highlight,dec:1}]);
+
+  // BMS pack temperatures — Cardputer logs up to 6 (orphan data; FC has one)
+  const bmsTemps = (D.fields||[]).filter(f=>/^bms_temp_\d+$/.test(f) && D.col[f] && D.col[f].some(v=>v!=null));
+  if (bmsTemps.length)
+    makeChart(m,'BMS temperatures', bmsTemps.map((c,i)=>({label:c.replace('bms_temp_','T'),col:c,color:`hsl(${20+i*32},75%,55%)`,dec:1})), 130);
+
+  // energy throughput — amp-hours used vs regenerated
+  if (has('amp_hours') || has('ah_charged'))
+    makeChart(m,'Amp-hours (used / regen)',[
+      {label:'Ah used',col:'amp_hours',color:C.wheel,dec:2},
+      {label:'Ah regen',col:'ah_charged',color:C.gps,dec:2},
+    ],130);
 }
 
 function viewImu() {

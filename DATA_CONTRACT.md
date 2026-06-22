@@ -53,9 +53,10 @@ count → saturates at 100%). The Cardputer HUD now ignores it and computes SOC
 from voltage, but the **web Battery view still charts the raw `batt_pct`** — so
 it can show a wrong %. Fix = recompute SOC from `voltage_V` in the web too.
 
-## Suggested follow-ups (none applied — audit only)
-1. Web Battery: add BMS-temp chart (`bms_temp_01..06`) + amp-hours — surface the
-   orphan Cardputer data.
-2. Web Battery %: derive from voltage like the HUD, don't trust `batt_pct`.
-3. Drop unused columns from the logger (`foc_id_A`, `cell_max`, `tacho_abs`) or
+## Follow-ups
+1. ✅ **Done** — Web Battery shows BMS-temp chart (`bms_temp_01..06`) + amp-hours
+   (used/regen), surfacing the orphan Cardputer data.
+2. ✅ **Done** — Web Battery now derives `soc_pct` from `voltage_V` (3.0–4.2 V/cell,
+   like the HUD); raw `batt_pct` shown dashed only for comparison.
+3. ☐ Drop unused columns from the logger (`foc_id_A`, `cell_max`, `tacho_abs`) or
    wire them into views — pick one so logged ≡ shown.
