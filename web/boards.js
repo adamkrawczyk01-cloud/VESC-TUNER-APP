@@ -71,8 +71,8 @@ async function renderBoards(){
 function fmtRideMeta(r){
   const m = r.metrics||{};
   const bits = [];
-  if(m.dur) bits.push(m.dur.toFixed(0)+'m');
-  if(m.dist) bits.push(m.dist.toFixed(1)+'km');
+  if(m.dur>0 && m.dur<1440)  bits.push(m.dur.toFixed(0)+'m');     // hide absurd stored metrics
+  if(m.dist>0 && m.dist<1000) bits.push(m.dist.toFixed(1)+'km');  // (e.g. odometer-glitch 1.2M km)
   return bits.length ? bits.join(' · ') : 'local';
 }
 
