@@ -2473,13 +2473,19 @@ static void drawWifi() {
 //  setup()
 // ─────────────────────────────────────────────────────────────────────────────
 void setup() {
+    Serial.begin(115200);
+    delay(300);
+    Serial.println("\n[BOOT] setup() start");
     auto cfg = M5.config();
     M5Cardputer.begin(cfg, true);
     M5Cardputer.Display.setRotation(1);
     M5Cardputer.Display.setBrightness(120);
+    Serial.printf("[BOOT] M5 begin ok, disp %dx%d\n",
+                  (int)M5Cardputer.Display.width(), (int)M5Cardputer.Display.height());
 
-    canvas.createSprite(DW, DH);
+    void* sb = canvas.createSprite(DW, DH);
     canvas.setTextWrap(false);
+    Serial.printf("[BOOT] sprite buf=%p %dx%d\n", sb, (int)canvas.width(), (int)canvas.height());
 
     // Splash screen
     canvas.fillScreen(C_BG);
@@ -2519,12 +2525,15 @@ void setup() {
     // usbMscBegin();
 
     // BLE init
+    Serial.printf("[BOOT] SD=%d, init BLE...\n", (int)gSdOk);
     NimBLEDevice::init("VESC-Tuner");
     NimBLEDevice::setPower(ESP_PWR_LVL_P9);
     NimBLEDevice::setMTU(517);   // request large ATT MTU — fewer fragmented responses
     canvas.setTextDatum(TL_DATUM);
+    Serial.println("[BOOT] BLE init done, autoConnectLast()...");
 
     autoConnectLast();           // reconnect last board without [P]
+    Serial.println("[BOOT] setup() done");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
