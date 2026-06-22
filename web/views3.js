@@ -30,9 +30,10 @@ function histogram(arr, nbins){
   for(const v of vals){ let k=Math.floor((v-lo)/w); if(k>=nbins)k=nbins-1; if(k<0)k=0; bins[k]++; }
   return { lo, hi, w, bins, n:vals.length };
 }
-function renderHistogram(parent, title, col, color, unit, dec=0){
+function renderHistogram(parent, title, col, color, unit, dec=0, filter){
   if(!has(col)) return;
-  const h=histogram(D.col[col], 28); if(!h) return;
+  const src = filter ? D.col[col].map(v => (v!=null && filter(v)) ? v : null) : D.col[col];
+  const h=histogram(src, 28); if(!h) return;
   sectionTitle(parent, title);
   const wrap=el('div','hist'); const max=Math.max(...h.bins);
   h.bins.forEach((c,i)=>{ if(c===0 && i!==0 && i!==h.bins.length-1) {/*keep sparse*/}
@@ -51,11 +52,11 @@ function renderHistogram(parent, title, col, color, unit, dec=0){
    HISTOGRAMS (#3)
    ============================================================ */
 function viewHistograms(){
-  const m=clearMain(); topbar(m,'Histograms','where the ride actually spends its time');
-  renderHistogram(m,'Speed', 'speed_kmh', C.warning, ' km/h', 0);
-  renderHistogram(m,'Duty cycle', 'duty_pct', C.highlight, '%', 0);
-  renderHistogram(m,'Current in', 'curr_in_A', C.wheel, ' A', 0);
-  renderHistogram(m,'Power', 'power_W', C.target, ' W', 0);
+  const m=clearMain(); topbar(m,'Histograms','where the ride actually spends its time · idle/regen excluded');
+  renderHistogram(m,'Speed (moving)', 'speed_kmh', C.warning, ' km/h', 0, v=>v>0);
+  renderHistogram(m,'Duty cycle (>1%)', 'duty_pct', C.highlight, '%', 0, v=>Math.abs(v)>=1);
+  renderHistogram(m,'Current in (draw)', 'curr_in_A', C.wheel, ' A', 0, v=>v>=0);
+  renderHistogram(m,'Power (draw)', 'power_W', C.target, ' W', 0, v=>v>=0);
   if(has('roll_deg')) renderHistogram(m,'Lean angle (roll)', 'roll_deg', C.gps, '°', 0);
   if(has('pitch_deg')) renderHistogram(m,'Pitch', 'pitch_deg', C.bran, '°', 0);
 }
