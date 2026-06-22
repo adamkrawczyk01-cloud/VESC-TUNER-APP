@@ -43,6 +43,8 @@
 #include <WebServer.h>
 #include <ESPmDNS.h>
 #include <math.h>
+#include <time.h>
+#include <sys/time.h>
 
 // ── SD pins (M5Cardputer) ────────────────────────────────────────────────────
 #define PIN_SD_CS    12
@@ -278,6 +280,7 @@ static bool     gChargeDismissed = false;
 static uint32_t gChargeBeepMs = 0;
 static bool     gChargeBeep2 = false;
 static int      gChargePingStep = -1;    // last 0.1V step pinged on the run-up to full
+static uint8_t  gVolume = 160;           // speaker volume (Q quieter / W louder), saved to NVS
 static uint32_t gLastBmsMs = 0;
 static uint32_t gLastSetupMs = 0;
 static uint32_t gLastImuMs = 0;
@@ -1286,6 +1289,24 @@ static float packVoltage() {
     return (gBms.valid && gBms.vTot > 1.f) ? gBms.vTot : gV.voltage;
 }
 
+// Seed the system clock from the build date/time (the Cardputer has no RTC that
+// survives power-off). Makes SD files get a sane date (~flash date) instead of
+// 1980/2033. Re-applied every boot.
+static void setClockFromBuild() {
+    struct tm t = {0};
+    char mon[8] = {0}; int day = 1, year = 2025, hh = 0, mm = 0, ss = 0;
+    sscanf(__DATE__, "%7s %d %d", mon, &day, &year);   // e.g. "Jun 22 2026"
+    sscanf(__TIME__, "%d:%d:%d", &hh, &mm, &ss);
+    static const char* M = "JanFebMarAprMayJunJulAugSepOctNovDec";
+    const char* p = strstr(M, mon);
+    t.tm_mon  = p ? (int)((p - M) / 3) : 0;
+    t.tm_mday = day; t.tm_year = year - 1900;
+    t.tm_hour = hh; t.tm_min = mm; t.tm_sec = ss;
+    time_t epoch = mktime(&t);
+    struct timeval tv = { .tv_sec = epoch, .tv_usec = 0 };
+    settimeofday(&tv, nullptr);
+}
+
 static void drawZoneA() {
     canvas.fillRect(0, ZA_Y, DW, ZA_H, C_SB);
     canvas.setTextSize(1);
@@ -1647,8 +1668,17 @@ static void handleKeys() {
             continue;
         }
 
-        // [W] — jump to WiFi screen and connect to the saved home network
-        if (c == 'w') {
+        // [Q] quieter / [W] louder — speaker volume (saved to NVS, audible feedback)
+        if (c == 'q' || c == 'w') {
+            int v = (int)gVolume + (c == 'w' ? 20 : -20);
+            gVolume = (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v));
+            M5Cardputer.Speaker.setVolume(gVolume);
+            M5Cardputer.Speaker.tone(3000, 80);        // feedback beep at the new level
+            Preferences p; p.begin("vesc", false); p.putUChar("vol", gVolume); p.end();
+            continue;
+        }
+        // [I] — jump to WiFi screen and connect to the saved home network (was [W])
+        if (c == 'i') {
             gScreen = 10;
             renderScreen(); canvas.pushSprite(0, 0);  // show "connecting" before the blocking connect
             wifiConnect();
@@ -2530,11 +2560,13 @@ void setup() {
     Serial.begin(115200);
     delay(300);
     Serial.println("\n[BOOT] setup() start");
+    setClockFromBuild();         // sane date for SD files (no hardware RTC)
     auto cfg = M5.config();
     M5Cardputer.begin(cfg, true);
     M5Cardputer.Display.setRotation(1);
     M5Cardputer.Display.setBrightness(120);
-    M5Cardputer.Speaker.setVolume(160);    // full-charge chime
+    { Preferences p; p.begin("vesc", true); gVolume = p.getUChar("vol", 160); p.end(); }
+    M5Cardputer.Speaker.setVolume(gVolume);   // restored volume (Q/W adjust)
     Serial.printf("[BOOT] M5 begin ok, disp %dx%d\n",
                   (int)M5Cardputer.Display.width(), (int)M5Cardputer.Display.height());
 
