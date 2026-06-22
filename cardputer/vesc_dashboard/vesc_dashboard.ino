@@ -1878,18 +1878,21 @@ static void drawRide() {
     // (gV.batt_pct) is unreliable on this setup — a wrong cell count in the VESC
     // config saturates it at 100% (e.g. 72.9V reported as full) — so trust the
     // measured voltage; fall back to battery_level only if voltage is invalid.
-    float soc;
-    if (gV.valid && gProfile.batt_max_v > gProfile.batt_min_v)
+    // soc < 0 = no reading yet (not connected to a VESC) → show "--" not "0%".
+    float soc = -1.f;
+    if (gV.valid && gV.voltage > 1.f && gProfile.batt_max_v > gProfile.batt_min_v)
         soc = constrain((gV.voltage - gProfile.batt_min_v) /
                         (gProfile.batt_max_v - gProfile.batt_min_v), 0.f, 1.f);
-    else
-        soc = (gV.setup && gV.batt_pct > 0) ? constrain(gV.batt_pct / 100.f, 0.f, 1.f) : 0;
-    char bp[8]; snprintf(bp, sizeof(bp), "%d%%", (int)(soc * 100));
+    else if (gV.setup && gV.batt_pct > 0)
+        soc = constrain(gV.batt_pct / 100.f, 0.f, 1.f);
+    char bp[8];
+    if (soc < 0.f) snprintf(bp, sizeof(bp), "--");
+    else           snprintf(bp, sizeof(bp), "%d%%", (int)(soc * 100));
     canvas.setTextColor(C_VOLT); canvas.setTextDatum(ML_DATUM); canvas.drawString(bp, 3, 128);
     int bx = 32, bw = 148, by = 125, bh = 6;
     canvas.drawRect(bx, by, bw, bh, C_DGREY);
     uint16_t sc = soc < 0.15f ? C_RED : soc < 0.30f ? C_WARN : C_VOLT;
-    if (soc > 0) canvas.fillRect(bx + 1, by + 1, (int)((bw - 2) * soc), bh - 2, sc);
+    if (soc > 0.f) canvas.fillRect(bx + 1, by + 1, (int)((bw - 2) * soc), bh - 2, sc);
     char tr[24]; snprintf(tr, sizeof(tr), "%.1fkm", gStat.total_km);
     canvas.setTextColor(C_GREY); canvas.setTextDatum(MR_DATUM); canvas.drawString(tr, DW - 3, 128);
     canvas.setTextDatum(TL_DATUM);
