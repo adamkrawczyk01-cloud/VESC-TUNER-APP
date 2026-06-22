@@ -259,8 +259,8 @@ static bool     gSdOk    = false;
 static int      gScreen  = 0;           // 0 HUD 1 TRIP 2 FAULT 3 BACKUP 4 RESTORE 5 BOARD 6 CONFIG 7 REVIEW 8 APPLY 10 WIFI
 #define SC_COUNT 11
 static int      gBackupSel = 0;         // selected restore point on RESTORE screen
-static uint8_t  gMcconfRaw[512];   static int gMcconfRawLen   = 0;  // raw config snapshots
-static uint8_t  gAppconfRaw[512];  static int gAppconfRawLen  = 0;
+static uint8_t  gMcconfRaw[1024];  static int gMcconfRawLen   = 0;  // raw config snapshots
+static uint8_t  gAppconfRaw[1024]; static int gAppconfRawLen  = 0;  // (1024 — full mcconf/appconf, no truncation)
 static uint8_t  gCustomCfgRaw[768];static int gCustomCfgRawLen = 0; // Refloat package config (raw)
 static char     gBackupMsg[48] = "";    // last backup status (shown on BACKUP screen)
 static void doBackup();                 // fwd decl (defined in front-end block)
@@ -294,10 +294,10 @@ static NimBLEClient*               gBleClient = nullptr;
 static NimBLERemoteCharacteristic* gCharRx    = nullptr;  // write to VESC
 static NimBLERemoteCharacteristic* gCharTx    = nullptr;  // notify from VESC
 
-static uint8_t  gRxBuf[512];        // one complete reassembled frame (for unpackPkt)
+static uint8_t  gRxBuf[1024];       // one complete reassembled frame (1024 — full mcconf/appconf)
 static uint16_t gRxLen   = 0;
 static volatile bool gRxReady  = false;
-static uint8_t  gAcc[1024];         // raw BLE chunk accumulator (reassembly across MTU chunks)
+static uint8_t  gAcc[2048];         // raw BLE chunk accumulator (reassembly across MTU chunks)
 static uint16_t gAccLen  = 0;
 static int      gCanId   = -1;      // motor controller CAN id; -1 = direct/unknown
 static volatile bool gCanDiscovered = false;
@@ -1029,7 +1029,8 @@ static bool bleConnect(const NimBLEAddress& addr) {
         Serial.printf("[BLE] saved last board %s (%s)\n", addr.toString().c_str(), nm);
     }
     gAutoArmed = true;           // arm auto-logging for this fresh connection
-    requestConfig(CMD_GET_MCCONF, 1500);   // config snapshot for this connection
+    requestConfig(CMD_GET_MCCONF, 1500);   // motor config snapshot for this connection
+    requestConfig(CMD_GET_APPCONF, 1500);  // app config too — capture everything
     // ─────────────────────────────────────────────────────────────────────────
 
     return true;
@@ -1144,11 +1145,17 @@ static void startSession() {
     gStat.min_volt = 100.f; gStat.start_ah = -1.f;
     gTripMs = millis();
     csvWriteHeader();
-    // mcconf snapshot for this session (raw bytes captured at connect)
+    // raw config snapshots for this session (captured at connect) — the full
+    // untruncated blobs hold every mcconf/appconf field for later decoding.
     if (gMcconfRawLen > 0) {
         char mp[64]; snprintf(mp, sizeof(mp), "/sessions/%s_mcconf.bin", gSessName);
         File mf = SD.open(mp, FILE_WRITE);
         if (mf) { mf.write(gMcconfRaw, gMcconfRawLen); mf.close(); }
+    }
+    if (gAppconfRawLen > 0) {
+        char ap[64]; snprintf(ap, sizeof(ap), "/sessions/%s_appconf.bin", gSessName);
+        File af = SD.open(ap, FILE_WRITE);
+        if (af) { af.write(gAppconfRaw, gAppconfRawLen); af.close(); }
     }
     gRec = true;
     Serial.printf("[LOG] start %s\n", gSessName);
@@ -2621,6 +2628,25 @@ static void checkChargeAlarm() {
     }
 }
 
+// Duty-cycle Geiger counter: from 70% toward the configured limit (80%), tick
+// faster the closer you get — audible "you're pushing duty" warning while riding.
+#define DUTY_GEIGER_LO 70.0f
+#define DUTY_GEIGER_HI 80.0f      // Refloat tiltback_duty (configured limit)
+static uint32_t gDutyTickMs = 0;
+static void checkDutyAlarm() {
+    if (!gV.valid) return;
+    float d = fabsf(gV.duty_pct);
+    if (d < DUTY_GEIGER_LO) return;                         // below window → silent
+    float frac = (d - DUTY_GEIGER_LO) / (DUTY_GEIGER_HI - DUTY_GEIGER_LO);
+    if (frac > 1.f) frac = 1.f;                             // at/over limit → fastest
+    uint32_t interval = (uint32_t)(650.f - frac * (650.f - 55.f));   // 650ms@70% → 55ms@80%
+    uint32_t now = millis();
+    if (now - gDutyTickMs >= interval) {
+        gDutyTickMs = now;
+        M5Cardputer.Speaker.tone(4186, 20);                 // short Geiger "tick" (C8)
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  loop()
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2628,6 +2654,7 @@ void loop() {
     M5Cardputer.update();
     handleKeys();
     checkChargeAlarm();
+    checkDutyAlarm();
 
     if (gWifiOn) gWeb.handleClient();   // serve LAN requests (download / live)
 
