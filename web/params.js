@@ -43,6 +43,7 @@ const VT_PARAMS = [
     {k:'foc_motor_r',          n:'Motor Resistance',      u:'mΩ',  scale:1000,  path:'Motor Cfg → FOC → General (Detect)', range:null, tier:'ro',     eff:'From detection. Wrong value → low-speed chatter / heat.'},
     {k:'foc_motor_l',          n:'Motor Inductance',      u:'µH',  scale:1e6,   path:'Motor Cfg → FOC → General (Detect)', range:null, tier:'ro',     eff:'From detection. Affects current-loop & observer.'},
     {k:'foc_motor_flux_linkage',n:'Flux Linkage',         u:'mWb', scale:1000,  path:'Motor Cfg → FOC → General (Detect)', range:null, tier:'ro',     eff:'From detection. Off value = #1 cause of low-speed crunch.'},
+    {k:'foc_observer_type',    n:'Observer Type',         u:'',    path:'Motor Cfg → FOC → General',          range:null, tier:'manual', eff:'Ortega vs MXLEMMING. MXLEMMING usually kills low-speed chatter.'},
     {k:'foc_observer_gain',    n:'Observer Gain',         u:'',    path:'Motor Cfg → FOC → General',          range:null, tier:'manual', eff:'Position-estimate tracking. Too high = hunting/chatter at low speed.'},
     {k:'foc_openloop_rpm',     n:'Openloop ERPM',         u:'erpm',path:'Motor Cfg → FOC → Sensorless',       range:[0,2000], tier:'manual', eff:'How long it stays open-loop before handing to the observer.'},
     {k:'foc_sl_erpm',          n:'Sensorless ERPM',       u:'erpm',path:'Motor Cfg → FOC → Sensorless',       range:[500,5000], tier:'manual', eff:'Open-loop → sensorless handoff. The noisy zone for chatter.'},
@@ -110,10 +111,11 @@ function tuningAdvice(d){
     title:'Low-speed motor chatter ("crunching")', sev:'info', benign:true,
     evidence:`iq swings ±${ch.iqAmp}A at low ERPM (worst Δ${ch.peak}A @ ~${ch.worstE} erpm), id≈0, net torque ~0 → observer hunting, not a mechanical fault.`,
     fixes:[
-      {k:'foc_motor_flux_linkage', action:'Re-run FOC detection', why:'an off flux_linkage is the #1 cause of low-speed chatter'},
-      {k:'foc_observer_gain',      action:'lower ~15–20%',         why:'less position-estimate hunting in the handoff zone'},
-      {k:'foc_openloop_rpm',       action:'raise (e.g. +200)',     why:'stay open-loop through the noisy low-erpm band'},
-      {k:'foc_sl_erpm',            action:'raise a little',        why:'delay the sensorless handoff past where it chatters'},
+      {k:'foc_observer_type',      action:'try MXLEMMING',          why:'modern observer — usually the REAL fix for low-speed chatter (try first)'},
+      {k:'foc_motor_flux_linkage', action:'re-detect, verify it changed', why:'common cause; if the value barely moved, detection is not the issue'},
+      {k:'foc_observer_gain',      action:'lower ~15–20%',          why:'less position-estimate hunting'},
+      {k:'foc_sl_erpm',            action:'raise (FOC → Sensorless tab)', why:'stay open-loop past the noisy zone'},
+      {k:'foc_openloop_rpm',       action:'revert if it got worse', why:'rough open-loop can ADD chatter — only helps if smooth'},
     ],
   });
 
