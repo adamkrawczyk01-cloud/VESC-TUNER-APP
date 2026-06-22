@@ -25,9 +25,11 @@
 //    /config/suggestions.json          (written by Mac → read by Cardputer)
 //    /config/changes_log.csv
 //
-//  TODO (next iterations):
-//    - Full SET_MCCONF binary serialisation (requires full mcconf blob)
-//    - USB MSC raw block callbacks (sd.card()->readSectors / writeSectors)
+//  READ-ONLY BLACK BOX: only GET_* commands are ever sent to the VESC (read
+//  telemetry + config) and logged to SD. There is NO SET/write command anywhere
+//  — this firmware can never change a VESC parameter. Tune by hand in VESC Tool
+//  after reviewing the data + suggestions in the web app.
+//  TODO: USB MSC raw block callbacks (sd.card()->readSectors / writeSectors).
 //    - COMM_GET_IMU_DATA for real pitch angle
 //    - COMM_GET_APPCONF full parse (Float Package params)
 // ============================================================================
@@ -61,7 +63,6 @@
 #define CMD_FW_VERSION   0
 #define CMD_GET_VALUES   4
 #define CMD_GET_MCCONF  14
-#define CMD_SET_MCCONF  13
 #define CMD_GET_APPCONF 16
 #define CMD_FORWARD_CAN 34       // 0x22 — wrap [34,canId,cmd] to reach motor over CAN
 #define CMD_PING_CAN    62       // 0x3E — ESP32 discovers CAN device IDs
@@ -212,6 +213,7 @@ struct DeviceProfile {
     float batt_min_v  = N_CELLS_DEF * 3.0f;
     float batt_nom_v  = N_CELLS_DEF * 3.6f;
     float batt_cap_ah = 0.0f;
+    float tiltback_duty = 80.0f;   // duty-Geiger limit — set to your Refloat tiltback_duty
     // Motor / wheel
     int   motor_poles = POLE_PAIRS_DEF;   // pole pairs (si_motor_poles)
     float wheel_mm    = WHEEL_MM_DEF;
@@ -674,6 +676,7 @@ static void saveProfileToSD() {
     f.printf("  \"batt_min_v\": %.2f,\n",          gProfile.batt_min_v);
     f.printf("  \"batt_nom_v\": %.2f,\n",          gProfile.batt_nom_v);
     f.printf("  \"batt_cap_ah\": %.2f,\n",         gProfile.batt_cap_ah);
+    f.printf("  \"tiltback_duty\": %.1f,\n",       gProfile.tiltback_duty);
     f.printf("  \"motor_poles\": %d,\n",           gProfile.motor_poles);
     f.printf("  \"wheel_mm\": %.1f\n",             gProfile.wheel_mm);
     f.printf("}\n");
@@ -694,6 +697,8 @@ static void loadProfileFromSD() {
         if (fv > 0) gProfile.batt_min_v = fv;
         fv = jFloat(line, "batt_nom_v");
         if (fv > 0) gProfile.batt_nom_v = fv;
+        fv = jFloat(line, "tiltback_duty");
+        if (fv > 0) gProfile.tiltback_duty = fv;
         fv = jFloat(line, "batt_cap_ah");
         if (fv >= 0) gProfile.batt_cap_ah = fv;
         fv = jFloat(line, "motor_poles");
@@ -2660,16 +2665,18 @@ static void checkChargeAlarm() {
     }
 }
 
-// Duty-cycle Geiger counter: from 70% toward the configured limit (80%), tick
-// faster the closer you get — audible "you're pushing duty" warning while riding.
-#define DUTY_GEIGER_LO 70.0f
-#define DUTY_GEIGER_HI 80.0f      // Refloat tiltback_duty (configured limit)
+// Duty-cycle Geiger counter: from 10% below the configured tiltback_duty up to
+// it, tick faster the closer you get — audible "you're pushing duty" warning.
+// Limit comes from the SD profile (gProfile.tiltback_duty) — set it to match
+// your Refloat tiltback_duty; defaults to 80%.
 static uint32_t gDutyTickMs = 0;
 static void checkDutyAlarm() {
     if (!gV.valid) return;
+    const float hi = gProfile.tiltback_duty > 0 ? gProfile.tiltback_duty : 80.0f;
+    const float lo = hi - 10.0f;
     float d = fabsf(gV.duty_pct);
-    if (d < DUTY_GEIGER_LO) return;                         // below window → silent
-    float frac = (d - DUTY_GEIGER_LO) / (DUTY_GEIGER_HI - DUTY_GEIGER_LO);
+    if (d < lo) return;                                     // below window → silent
+    float frac = (d - lo) / (hi - lo);
     if (frac > 1.f) frac = 1.f;                             // at/over limit → fastest
     uint32_t interval = (uint32_t)(650.f - frac * (650.f - 55.f));   // 650ms@70% → 55ms@80%
     uint32_t now = millis();
