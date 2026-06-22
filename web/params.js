@@ -40,9 +40,9 @@ const VT_PARAMS = [
     {k:'l_temp_motor_end',  n:'Motor Temp Cutoff End',    u:'°C', path:'Motor Cfg → General → Temperature', range:[80,110],tier:'manual', eff:'Full motor cutoff.'},
   ]},
   { sec:'Motor · FOC', items:[
-    {k:'foc_motor_r',          n:'Motor Resistance',      u:'mΩ',  path:'Motor Cfg → FOC → General (Detect)', range:null, tier:'ro',     eff:'From detection. Wrong value → low-speed chatter / heat.'},
-    {k:'foc_motor_l',          n:'Motor Inductance',      u:'µH',  path:'Motor Cfg → FOC → General (Detect)', range:null, tier:'ro',     eff:'From detection. Affects current-loop & observer.'},
-    {k:'foc_motor_flux_linkage',n:'Flux Linkage',         u:'mWb', path:'Motor Cfg → FOC → General (Detect)', range:null, tier:'ro',     eff:'From detection. Off value = #1 cause of low-speed crunch.'},
+    {k:'foc_motor_r',          n:'Motor Resistance',      u:'mΩ',  scale:1000,  path:'Motor Cfg → FOC → General (Detect)', range:null, tier:'ro',     eff:'From detection. Wrong value → low-speed chatter / heat.'},
+    {k:'foc_motor_l',          n:'Motor Inductance',      u:'µH',  scale:1e6,   path:'Motor Cfg → FOC → General (Detect)', range:null, tier:'ro',     eff:'From detection. Affects current-loop & observer.'},
+    {k:'foc_motor_flux_linkage',n:'Flux Linkage',         u:'mWb', scale:1000,  path:'Motor Cfg → FOC → General (Detect)', range:null, tier:'ro',     eff:'From detection. Off value = #1 cause of low-speed crunch.'},
     {k:'foc_observer_gain',    n:'Observer Gain',         u:'',    path:'Motor Cfg → FOC → General',          range:null, tier:'manual', eff:'Position-estimate tracking. Too high = hunting/chatter at low speed.'},
     {k:'foc_openloop_rpm',     n:'Openloop ERPM',         u:'erpm',path:'Motor Cfg → FOC → Sensorless',       range:[0,2000], tier:'manual', eff:'How long it stays open-loop before handing to the observer.'},
     {k:'foc_sl_erpm',          n:'Sensorless ERPM',       u:'erpm',path:'Motor Cfg → FOC → Sensorless',       range:[500,5000], tier:'manual', eff:'Open-loop → sensorless handoff. The noisy zone for chatter.'},
@@ -54,13 +54,31 @@ const VT_PARAMS = [
   ]},
 ];
 
-// current board value for a key: loaded mcconf JSON first, else the decoded GAD
-// snapshot. returns {v, src} or {v:null}.
+// current board value for a key: loaded config (mcconf JSON / VESC Tool XML)
+// first, else the decoded GAD snapshot. Applies the display-unit scale (e.g.
+// foc_motor_r Ω→mΩ). returns {v, src} or {v:null}.
 function paramCurrent(k){
+  let raw=null, src=null;
   const mc = CFG.mcconf;
-  if(mc){ const v = mc[k] ?? mc[k.toUpperCase?.()]; if(v!=null && v!=='' && Math.abs(+v)<1e6) return {v:+v, src:'mcconf'}; }
-  if(k in DECODED_BOARD) return {v:DECODED_BOARD[k], src:'backup'};
-  return {v:null, src:null};
+  if(mc){ const v = mc[k] ?? mc[k.toUpperCase?.()]; if(v!=null && v!=='' && Math.abs(+v)<1e9){ raw=+v; src='config'; } }
+  if(raw==null && (k in DECODED_BOARD)){ raw=DECODED_BOARD[k]; src='backup'; }
+  if(raw==null) return {v:null, src:null};
+  if(src!=='backup'){ const p=VT_PARAMS.flatMap(s=>s.items).find(p=>p.k===k); if(p&&p.scale) raw*=p.scale; }
+  return { v: Math.round(raw*100)/100, src };
+}
+
+// Parse a VESC Tool "Save Configuration XML" into a flat {param: number} map.
+// Leaf element tag names == param keys (l_current_max, foc_observer_gain, …).
+function parseVescXML(text){
+  const out={};
+  try{
+    const doc=new DOMParser().parseFromString(text,'text/xml');
+    doc.querySelectorAll('*').forEach(el=>{
+      if(el.children.length===0){ const s=(el.textContent||'').trim();
+        if(s!=='' && !isNaN(+s)) out[el.tagName]=+s; }
+    });
+  }catch(e){}
+  return out;
 }
 
 /* ---------- diagnostics ---------- */

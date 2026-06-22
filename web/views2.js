@@ -222,6 +222,8 @@ function viewTuning(){
   const m=clearMain(); topbar(m,'Tuning loop','config snapshot · suggestions · AI report');
   const bar=el('div','cmpbar');
   bar.append(
+    btn('↑ VESC Tool XML', ()=>pickFile('.xml',(t)=>{ const cfg=(typeof parseVescXML==='function')?parseVescXML(t):null;
+      if(cfg && Object.keys(cfg).length){ CFG.mcconf=cfg; render('tuning'); } else alert('No parameters found in that XML.'); }),'sm'),
     btn('↑ mcconf.json', ()=>pickFile('.json',(t)=>{ CFG.mcconf=safeJSON(t); render('tuning'); }),'sm'),
     btn('↑ appconf.json', ()=>pickFile('.json',(t)=>{ CFG.appconf=safeJSON(t); render('tuning'); }),'sm'),
     btn('↑ suggestions.json', ()=>pickFile('.json',(t)=>{ CFG.suggestions=safeJSON(t); render('tuning'); }),'sm'),
