@@ -147,6 +147,18 @@ nav{display:flex;flex-direction:column;gap:2px;padding:8px 10px}
 .alertact{white-space:nowrap}
 .alertact .loadbtn.sm{padding:2px 8px;margin-left:4px}
 
+/* ---- tuning advisor (diagnose → fix) ---- */
+.advcard{background:var(--surface);border:1px solid var(--border);border-left-width:3px;border-radius:10px;padding:11px 14px;margin-bottom:10px}
+.advcard.sev-err{border-left-color:var(--error)} .advcard.sev-warn{border-left-color:var(--warning)} .advcard.sev-info{border-left-color:var(--wheel)}
+.advhead{display:flex;align-items:center;gap:8px;font-size:13.5px;margin-bottom:4px}
+.advhead .benign{font-size:10px;font-weight:700;color:var(--gps);border:1px solid var(--gps);border-radius:5px;padding:1px 6px}
+.adved{font-size:12px;color:var(--text2);margin-bottom:8px}
+.src{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.3px}
+
+/* ---- VESC-Tool param catalog (norms) ---- */
+.vtsec{font-size:11px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--bran-text);margin:14px 2px 5px}
+.vtkey{font-size:10px;color:var(--muted);font-family:ui-monospace,monospace}
+
 /* ---- assessment card ---- */
 .assess{display:flex;gap:16px;align-items:flex-start;background:var(--surface);
   border:1px solid var(--border);border-radius:12px;padding:14px 16px;margin-bottom:14px}

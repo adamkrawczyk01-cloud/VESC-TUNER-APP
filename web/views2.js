@@ -233,6 +233,31 @@ function viewTuning(){
   st.textContent = `mcconf: ${CFG.mcconf?'loaded':'—'}   ·   appconf: ${CFG.appconf?'loaded':'—'}   ·   suggestions: ${CFG.suggestions?'loaded':'—'}`;
   m.append(st);
 
+  /* ---- diagnose → fix: the main loop (manual changes in VESC Tool) ---- */
+  if (typeof tuningAdvice === 'function' && D){
+    const issues = tuningAdvice(D);
+    sectionTitle(m, `Diagnose → fix  (${issues.length}) — change manually in VESC Tool`);
+    if(!issues.length){ const ok=el('div','flag ok'); ok.innerHTML='<span class="ico">✓</span><div><div class="t">Nothing to tune</div><div class="d">no problems detected in this session</div></div>'; m.append(ok); }
+    const find=k=>(typeof VT_PARAMS!=='undefined')?VT_PARAMS.flatMap(s=>s.items).find(p=>p.k===k):null;
+    issues.forEach(is=>{
+      const card=el('div','advcard sev-'+is.sev);
+      const head=el('div','advhead'); head.innerHTML=`<b>${is.title}</b>`+(is.benign?'<span class="benign">harmless</span>':'');
+      card.append(head);
+      const ev=el('div','adved'); ev.textContent=is.evidence; card.append(ev);
+      const tbl=el('table','cfgtable'); tbl.innerHTML='<tr><th>parameter</th><th>current</th><th>change</th><th>VESC Tool</th><th>why</th></tr>';
+      is.fixes.forEach(f=>{ const meta=find(f.k);
+        const cur=(typeof paramCurrent==='function' && meta)?paramCurrent(f.k):{v:null};
+        const curStr = cur.v!=null ? `${cur.v}${meta&&meta.u?meta.u:''} <span class="src">${cur.src}</span>` : '—';
+        const tr=el('tr');
+        tr.innerHTML=`<td>${meta?meta.n:f.k}</td><td class="mono">${curStr}</td>`+
+          `<td style="color:var(--bran-text)">${f.action}</td>`+
+          `<td style="color:var(--muted);font-size:11px">${meta?meta.path:'—'}</td>`+
+          `<td style="color:var(--text2);font-size:11.5px">${f.why}</td>`;
+        tbl.append(tr); });
+      card.append(tbl); m.append(card);
+    });
+  }
+
   /* ---- whitelist current values ---- */
   if (CFG.mcconf){
     sectionTitle(m,'Current config (whitelist)');

@@ -160,6 +160,30 @@ function viewNorms(){
     tbl.append(tr); });
   m.append(tbl);
 
+  // Board config laid out like VESC Tool — current value + safe range + effect.
+  if(typeof VT_PARAMS!=='undefined'){
+    sectionTitle(m,'Board config — VESC Tool layout');
+    const tierTip={wl:'auto-tunable (±15% guard)', manual:'change by hand in VESC Tool', ro:'detection result / read-only'};
+    VT_PARAMS.forEach(grp=>{
+      const h=el('div','vtsec'); h.textContent=grp.sec; m.append(h);
+      const tbl=el('table','cfgtable');
+      tbl.innerHTML='<tr><th>parameter</th><th>current</th><th>typical range</th><th>edit</th><th>effect</th></tr>';
+      grp.items.forEach(p=>{ const cur=(typeof paramCurrent==='function')?paramCurrent(p.k):{v:null};
+        const curStr = cur.v!=null ? `${cur.v}${p.u||''} <span class="src">${cur.src}</span>` : '—';
+        const rng = p.range ? `${p.range[0]}…${p.range[1]}${p.u||''}` : 'detected';
+        const tr=el('tr'); tr.title=p.path;
+        tr.innerHTML=`<td>${p.n}<div class="vtkey">${p.k}</div></td>`+
+          `<td class="num mono">${curStr}</td><td class="num mono" style="color:var(--muted)">${rng}</td>`+
+          `<td><span class="srcref" title="${tierTip[p.tier]||''}">${p.tier.toUpperCase()}</span></td>`+
+          `<td style="color:var(--text2);font-size:11.5px">${p.eff}</td>`;
+        tbl.append(tr); });
+      m.append(tbl);
+    });
+    const cn=el('div','hint'); cn.style.margin='4px 2px 12px';
+    cn.innerHTML='Current value: <b>mcconf</b> = loaded config JSON · <b>backup</b> = decoded from the GAD backup (currents only so far) · <b>—</b> = needs full mcconf decode (fw-6.5 confgenerator). Changes are <b>manual in VESC Tool</b> — the app never writes to the VESC.';
+    m.append(cn);
+  }
+
   sectionTitle(m,'Reference library (community / datasheet)');
   const lib=el('div','reflib');
   const card=(title, obj, src)=>{ const c=el('div','refcard');
