@@ -160,17 +160,26 @@ function tuningAdvice(d){
   const N = (typeof norm==='function') ? norm : (()=>({value:null}));
 
   const ch=detectChatter(d);
-  if(ch.present) out.push({
-    title:'Low-speed motor chatter ("crunching")', sev:'info', benign:true,
-    evidence:`iq swings ±${ch.iqAmp}A at low ERPM (worst Δ${ch.peak}A @ ~${ch.worstE} erpm), id≈0, net torque ~0 → observer hunting, not a mechanical fault.`,
-    fixes:[
-      {k:'foc_observer_type',      action:'try MXLEMMING',          why:'modern observer — usually the REAL fix for low-speed chatter (try first)'},
-      {k:'foc_motor_flux_linkage', action:'re-detect, verify it changed', why:'common cause; if the value barely moved, detection is not the issue'},
-      {k:'foc_observer_gain',      action:'lower ~15–20%',          why:'less position-estimate hunting'},
-      {k:'foc_sl_erpm',            action:'raise (FOC → Sensorless tab)', why:'stay open-loop past the noisy zone'},
-      {k:'foc_openloop_rpm',       action:'revert if it got worse', why:'rough open-loop can ADD chatter — only helps if smooth'},
-    ],
-  });
+  if(ch.present){
+    // data-aware advice: use the current FOC values + where the chatter sits
+    const cv = k => (typeof paramCurrent==='function') ? paramCurrent(k).v : null;
+    const obsT = cv('foc_observer_type'), slNow = cv('foc_sl_erpm'), kpNow = cv('foc_current_kp');
+    const slTgt = slNow!=null ? Math.round((Math.max(ch.worstE, slNow)+1000)/100)*100 : null;
+    const obsName = (typeof FOC_OBSERVER_NAMES!=='undefined' && obsT!=null) ? FOC_OBSERVER_NAMES[obsT] : null;
+    const fixes=[];
+    fixes.push({k:'foc_sl_erpm', action: slTgt?`raise ${slNow}→~${slTgt}`:'raise',
+      why:`chatter now sits ~${ch.worstE} erpm — move the sensorless handoff past it`});
+    fixes.push({k:'foc_current_kp', action: kpNow!=null?`lower ~15% (→${(kpNow*0.85).toFixed(3)})`:'lower ~15%',
+      why:'reduces current-loop whine/oscillation'});
+    fixes.push({k:'foc_observer_type', action: obsName?`keep ${obsName} — or try another`:'try another observer',
+      why:'switching this is what cut your chatter; keep the best one you find'});
+    fixes.push({k:'foc_motor_flux_linkage', action:'re-detect, verify it changed', why:'common cause if detection is off'});
+    out.push({
+      title:'Low-speed motor chatter ("crunching")', sev:'info', benign:true,
+      evidence:`iq swings ±${ch.iqAmp}A at low ERPM (worst Δ${ch.peak}A @ ~${ch.worstE} erpm)`+(obsName?`, observer = ${obsName}`:'')+`, id≈0, net torque ~0 → observer hunting, not mechanical.`,
+      fixes,
+    });
+  }
 
   const fw=N('fet_warn'), fc=N('fet_crit'), fet=h.mx('temp_fet_C');
   if(fet>0 && fet>fw.value) out.push({
