@@ -272,6 +272,11 @@ static uint8_t  gSessNum = 0;
 static char     gSessName[32] = {};
 static uint32_t gLastValMs = 0;
 static uint32_t gLastAllMs = 0;
+// full-charge chime: rings when the pack reaches ~4.2 V/cell (100%); any key off
+static bool     gChargeAlarm = false;
+static bool     gChargeDismissed = false;
+static uint32_t gChargeBeepMs = 0;
+static bool     gChargeBeep2 = false;
 static uint32_t gLastBmsMs = 0;
 static uint32_t gLastSetupMs = 0;
 static uint32_t gLastImuMs = 0;
@@ -1574,6 +1579,13 @@ static void handleKeys() {
     if (!M5Cardputer.Keyboard.isChange() ||
         !M5Cardputer.Keyboard.isPressed()) return;
 
+    // any key silences the full-charge chime (and is consumed for that)
+    if (gChargeAlarm && !gChargeDismissed) {
+        gChargeDismissed = true; gChargeAlarm = false;
+        M5Cardputer.Speaker.stop();
+        return;
+    }
+
     auto st = M5Cardputer.Keyboard.keysState();
     for (char c : st.word) {
         c = tolower(c);
@@ -1908,6 +1920,14 @@ static void drawRide() {
     char tr[24]; snprintf(tr, sizeof(tr), "%.1fkm", gStat.total_km);
     canvas.setTextColor(C_GREY); canvas.setTextDatum(MR_DATUM); canvas.drawString(tr, DW - 3, 128);
     canvas.setTextDatum(TL_DATUM);
+    // full-charge banner (blinking) overrides the footer while the chime rings
+    if (gChargeAlarm && !gChargeDismissed) {
+        canvas.fillRect(0, 121, DW, 14, C_BG);
+        canvas.setTextColor((millis() / 400) % 2 ? C_GREEN : C_VOLT);
+        canvas.setTextDatum(MC_DATUM);
+        canvas.drawString("FULL 100% - any key", DW / 2, 128);
+        canvas.setTextDatum(TL_DATUM);
+    }
 }
 
 // ── SCREEN 1 · DETAIL — full data grid (review on Mac later) ─────────────────
@@ -2495,6 +2515,7 @@ void setup() {
     M5Cardputer.begin(cfg, true);
     M5Cardputer.Display.setRotation(1);
     M5Cardputer.Display.setBrightness(120);
+    M5Cardputer.Speaker.setVolume(160);    // full-charge chime
     Serial.printf("[BOOT] M5 begin ok, disp %dx%d\n",
                   (int)M5Cardputer.Display.width(), (int)M5Cardputer.Display.height());
 
@@ -2551,12 +2572,32 @@ void setup() {
     Serial.println("[BOOT] setup() done");
 }
 
+// Full-charge chime: rings a two-note bell every ~2.5s once the pack hits
+// ~4.2 V/cell (100%). Any keypress silences it (see handleKeys); it re-arms
+// after the voltage drops ~1V (so the next full charge alerts again).
+static void checkChargeAlarm() {
+    if (!gV.valid || gV.voltage < 1.f) { gChargeAlarm = false; return; }
+    int cells = (gProfile.batt_cells >= 4 && gProfile.batt_cells <= 32) ? gProfile.batt_cells : N_CELLS_DEF;
+    float full = cells * 4.2f;
+    if (gV.voltage >= full - 0.2f) {                 // ~100%
+        if (!gChargeDismissed) gChargeAlarm = true;
+    } else if (gV.voltage < full - 1.0f) {           // hysteresis → re-arm
+        gChargeAlarm = false; gChargeDismissed = false;
+    }
+    if (gChargeAlarm && !gChargeDismissed) {
+        uint32_t now = millis(), dt = now - gChargeBeepMs;
+        if (dt > 2500) { gChargeBeepMs = now; M5Cardputer.Speaker.tone(2093, 120); gChargeBeep2 = true; }
+        else if (gChargeBeep2 && dt > 160) { gChargeBeep2 = false; M5Cardputer.Speaker.tone(2794, 150); }
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  loop()
 // ─────────────────────────────────────────────────────────────────────────────
 void loop() {
     M5Cardputer.update();
     handleKeys();
+    checkChargeAlarm();
 
     if (gWifiOn) gWeb.handleClient();   // serve LAN requests (download / live)
 
