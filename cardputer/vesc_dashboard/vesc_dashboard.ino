@@ -640,7 +640,11 @@ static void buildProfileFromMcconf() {
     if (cells < 4)  cells = N_CELLS_DEF;
     if (cells > 32) cells = N_CELLS_DEF;
     gProfile.batt_cells = cells;
-    gProfile.batt_min_v = gMC.l_battery_cut_end;
+    // cut_end is the per-pack low cutoff; reject implausible values (bad mcconf
+    // parse) so we never persist garbage like 1587V into the profile.
+    float cutEnd = gMC.l_battery_cut_end;
+    if (cutEnd < cells * 2.5f || cutEnd > cells * 3.6f) cutEnd = cells * 3.0f;
+    gProfile.batt_min_v = cutEnd;
     gProfile.batt_max_v = cells * 4.2f;
     gProfile.batt_nom_v = cells * 3.6f;
     // motor_poles / wheel_mm kept from previous profile or defaults
@@ -1878,11 +1882,19 @@ static void drawRide() {
     // (gV.batt_pct) is unreliable on this setup — a wrong cell count in the VESC
     // config saturates it at 100% (e.g. 72.9V reported as full) — so trust the
     // measured voltage; fall back to battery_level only if voltage is invalid.
+    // Sane voltage window from cell count (3.0–4.2 V/cell). The saved profile
+    // can be corrupt (we've seen batt_min_v=1587V from a bad mcconf/SD profile),
+    // so only trust profile min/max when they're physically plausible.
+    int   cells = (gProfile.batt_cells >= 4 && gProfile.batt_cells <= 32) ? gProfile.batt_cells : N_CELLS_DEF;
+    float vmin = cells * 3.0f, vmax = cells * 4.2f;
+    if (gProfile.batt_min_v > 10.f && gProfile.batt_min_v < vmax &&
+        gProfile.batt_max_v > gProfile.batt_min_v && gProfile.batt_max_v < 200.f) {
+        vmin = gProfile.batt_min_v; vmax = gProfile.batt_max_v;
+    }
     // soc < 0 = no reading yet (not connected to a VESC) → show "--" not "0%".
     float soc = -1.f;
-    if (gV.valid && gV.voltage > 1.f && gProfile.batt_max_v > gProfile.batt_min_v)
-        soc = constrain((gV.voltage - gProfile.batt_min_v) /
-                        (gProfile.batt_max_v - gProfile.batt_min_v), 0.f, 1.f);
+    if (gV.valid && gV.voltage > 1.f)
+        soc = constrain((gV.voltage - vmin) / (vmax - vmin), 0.f, 1.f);
     else if (gV.setup && gV.batt_pct > 0)
         soc = constrain(gV.batt_pct / 100.f, 0.f, 1.f);
     char bp[8];
