@@ -1270,6 +1270,12 @@ static uint16_t dutyCol(float d) {
 // ─────────────────────────────────────────────────────────────────────────────
 //  ZONE A — Status bar (y = 0..12)
 // ─────────────────────────────────────────────────────────────────────────────
+// Pack voltage for SOC / charge logic: prefer the BMS cell-sum (true cell state)
+// over the controller v_in, which the charger inflates while charging.
+static float packVoltage() {
+    return (gBms.valid && gBms.vTot > 1.f) ? gBms.vTot : gV.voltage;
+}
+
 static void drawZoneA() {
     canvas.fillRect(0, ZA_Y, DW, ZA_H, C_SB);
     canvas.setTextSize(1);
@@ -1422,8 +1428,8 @@ static void drawZoneD() {
 static void drawZoneE() {
     canvas.fillRect(0, ZE_Y, DW, ZF_Y - ZE_Y, C_BG);
 
-    // SOC bar (linear: 84V=100%, 60V=0%)
-    float soc = constrain((gV.voltage - gProfile.batt_min_v) /
+    // SOC bar (linear: 84V=100%, 60V=0%) — uses BMS cell voltage when available
+    float soc = constrain((packVoltage() - gProfile.batt_min_v) /
                          (gProfile.batt_max_v - gProfile.batt_min_v) * 100.f, 0.f, 100.f);
     int batFill = (int)(soc / 100.f * BAR_W);
     canvas.fillRect(0, BAT_Y, BAR_W, BAT_H, C_DGREY);
@@ -1905,9 +1911,11 @@ static void drawRide() {
         vmin = gProfile.batt_min_v; vmax = gProfile.batt_max_v;
     }
     // soc < 0 = no reading yet (not connected to a VESC) → show "--" not "0%".
+    // packVoltage() prefers the BMS cell-sum (true SoC) over charger-inflated v_in.
+    float pv = packVoltage();
     float soc = -1.f;
-    if (gV.valid && gV.voltage > 1.f)
-        soc = constrain((gV.voltage - vmin) / (vmax - vmin), 0.f, 1.f);
+    if ((gV.valid || gBms.valid) && pv > 1.f)
+        soc = constrain((pv - vmin) / (vmax - vmin), 0.f, 1.f);
     else if (gV.setup && gV.batt_pct > 0)
         soc = constrain(gV.batt_pct / 100.f, 0.f, 1.f);
     char bp[8];
@@ -2577,19 +2585,21 @@ void setup() {
 // ~4.2 V/cell (100%). Any keypress silences it (see handleKeys); it re-arms
 // after the voltage drops ~1V (so the next full charge alerts again).
 static void checkChargeAlarm() {
-    if (!gV.valid || gV.voltage < 1.f) { gChargeAlarm = false; return; }
+    if (!(gV.valid || gBms.valid)) { gChargeAlarm = false; return; }
+    float v = packVoltage();             // BMS cell-sum (true), not charger-inflated v_in
+    if (v < 1.f) { gChargeAlarm = false; return; }
     int cells = (gProfile.batt_cells >= 4 && gProfile.batt_cells <= 32) ? gProfile.batt_cells : N_CELLS_DEF;
     float full    = cells * 4.2f;        // 100%  (84.0 V on 20S)
     float pingLow = full - 1.0f;         // start of the run-up window (83.0 V)
 
     // re-arm everything once we drop back below the window (next charge alerts again)
-    if (gV.voltage < pingLow - 0.1f) {
+    if (v < pingLow - 0.1f) {
         gChargePingStep = -1; gChargeAlarm = false; gChargeDismissed = false;
     }
 
     // run-up pings: one short "ping" per ascending 0.1V step, 83.1 … 83.9 V
-    if (gV.voltage >= pingLow && gV.voltage < full - 0.05f) {
-        int step = (int)floorf((gV.voltage - pingLow) / 0.1f + 0.001f);   // 0..9
+    if (v >= pingLow && v < full - 0.05f) {
+        int step = (int)floorf((v - pingLow) / 0.1f + 0.001f);            // 0..9
         if (step > gChargePingStep) {
             gChargePingStep = step;
             if (step >= 1) M5Cardputer.Speaker.tone(3136, 70);            // single ping (G7)
@@ -2597,7 +2607,7 @@ static void checkChargeAlarm() {
     }
 
     // full (~100%): continuous two-note bell + banner until any key dismisses it
-    if (gV.voltage >= full - 0.05f) {
+    if (v >= full - 0.05f) {
         if (!gChargeDismissed) gChargeAlarm = true;
         if (gChargePingStep < 10) gChargePingStep = 10;
     }
