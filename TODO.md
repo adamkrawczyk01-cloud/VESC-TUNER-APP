@@ -11,10 +11,10 @@ connects to it). **Raw byte passthrough** (don't parse/modify), log via a tap co
 itself never originates a SET command.
 
 ### Phases
-- [ ] **Phase 0 — feasibility spike (do FIRST).** Separate sketch: NimBLE dual-role
-      (central holds VESC + peripheral advertises NUS `6e400001…`). Confirm phone can
-      see+connect to Cardputer-as-VESC while VESC link is held. **Measure throughput.**
-      If S3 bandwidth (BLE central+peripheral, maybe +WiFi) is too low → stop here.
+- [~] **Phase 0 — feasibility spike (IN PROGRESS).** Separate sketch
+      `cardputer/ble_relay/` — NimBLE dual-role (central holds VESC + peripheral
+      advertises NUS `6e400001…`) + minimal raw relay + throughput counter on screen.
+      → user flashes, connects Float Control, reports: does it connect + show live? B/s?
 - [ ] **Phase 1 — raw byte relay.** phone→(write RX)→VESC RX; VESC notify→(TX)→phone.
       Fragment per each side's MTU. Goal: Float Control actually connects + shows live.
 - [ ] **Phase 2 — logging tap.** In RELAY mode Cardputer STOPS its own polling (don't
@@ -32,13 +32,11 @@ Control handshake quirks (FW_VERSION/MTU); latency. Mitigate: raw relay, no doub
 
 ## Backlog / deferred
 
-- [ ] **After-ride verification:** new session after the FOC change (observer type /
-      sl_erpm) → compare `detectChatter` before (session_004: peak Δ89A @ ~1208 erpm)
-      vs after, to confirm the low-speed chatter dropped.
-- [ ] **Full mcconf decode (path A):** fetch VESC bldc `confgenerator.c` (WebFetch was
-      rate-limited) for fw-6.5 sig `0x2efd0142`; validate vs anchors (150/70/225) →
-      decode temps/battery_cut/FOC so sessions auto-populate current values without the
-      VESC Tool XML export. (Workaround in place: load VESC Tool XML in Tuning loop.)
+- [~] **After-ride verification:** session_008 (observer_type 2→3) vs session_004 →
+      chatter **−32%** (peak 89→61A). Ongoing: next is foc_sl_erpm 2000→~3000.
+- [x] **Full mcconf decode — DONE.** `decodeMcconfBin()` + `MCCONF_SCHEMA` in
+      params.js (confgenerator_serialize_mcconf order, fw 6.06, mixed types). Validated
+      (foc_observer_type @251). Auto-decode for shipped + paired `.bin` on local +CSV.
 - [ ] **P3 branch (`p3`, not merged):** mobile drawer, chart decimation toggle,
       self-baseline from history, collapsible nav. Decide merge or drop.
 - [ ] **Logger cleanup (audit #3):** drop unused CSV cols (foc_id_A, cell_max,

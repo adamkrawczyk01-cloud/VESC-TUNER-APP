@@ -21,18 +21,20 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export PATH="$PATH:$ROOT/bin"
 FQBN="m5stack:esp32:m5stack_cardputer:PartitionScheme=default_8MB"
 LIBS="$HOME/Documents/Arduino/libraries"
-SKETCH="$ROOT/cardputer/vesc_dashboard"
-OUT="/tmp/vesc_build"
-PORT="${1:-$(ls /dev/cu.usbmodem* 2>/dev/null | head -1)}"
+# $1 = sketch dir (default: the dashboard). e.g. cardputer/flash.sh cardputer/ble_relay
+SKETCH="${1:-$ROOT/cardputer/vesc_dashboard}"
+NAME="$(basename "$SKETCH")"
+OUT="/tmp/vesc_build_$NAME"
+PORT="${2:-$(ls /dev/cu.usbmodem* 2>/dev/null | head -1)}"
 ET="$(ls "$HOME"/Library/Arduino15/packages/m5stack/tools/esptool_py/*/esptool 2>/dev/null | head -1)"
 BA="$(ls "$HOME"/Library/Arduino15/packages/m5stack/hardware/esp32/*/tools/partitions/boot_app0.bin 2>/dev/null | head -1)"
 
 [ -n "$PORT" ] || { echo "No /dev/cu.usbmodem* port found — is the Cardputer plugged in?"; exit 1; }
-echo "Port: $PORT"
+echo "Port: $PORT   Sketch: $NAME"
 echo "Compiling…"
 arduino-cli compile --fqbn "$FQBN" --libraries "$LIBS" --output-dir "$OUT" "$SKETCH"
 
-B="$OUT/vesc_dashboard.ino"
+B="$OUT/$NAME.ino"
 echo "Flashing via esptool (--flash-size detect)…"
 "$ET" --chip esp32s3 --port "$PORT" --before default_reset --after hard_reset write-flash \
   --flash-mode dio --flash-freq 80m --flash-size detect \
