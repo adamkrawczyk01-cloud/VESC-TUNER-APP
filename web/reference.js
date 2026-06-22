@@ -127,6 +127,27 @@ function assessmentCard(parent, d){
   if(a.findings.length){ const fd=el('div','afind'); fd.innerHTML='<b>Findings:</b> '+a.findings.join(' · '); body.append(fd); }
   if(a.rec.length){ const rc=el('ul','arec'); a.rec.forEach(r=>{ const li=el('li'); li.textContent=r; rc.append(li); }); body.append(rc); }
   card.append(body); parent.append(card);
+  // self-baseline: compare to this board's own saved history (async, optional)
+  if(typeof boardBaseline==='function') boardBaseline().then(b=>{ if(!b) return;
+    const h=H(d), dist=h.distanceKm();
+    const whkm = dist>0 ? (h.last('watt_hours')-(h.last('wh_charged')||0))/dist : null;
+    const fet=h.mx('temp_fet_C'), top=h.mx('speed_kmh');
+    const sgn=x=>(x>=0?'+':'')+x.toFixed(1);
+    const parts=[];
+    if(b.whkm!=null && whkm!=null) parts.push(`Wh/km <b>${whkm.toFixed(1)}</b> vs typ ${b.whkm.toFixed(1)} (${sgn(whkm-b.whkm)})`);
+    if(b.maxFet!=null && fet>0)   parts.push(`max FET <b>${fet.toFixed(0)}°</b> vs typ ${b.maxFet.toFixed(0)}°`);
+    if(b.top!=null && top>0)      parts.push(`top <b>${top.toFixed(0)}</b> vs typ ${b.top.toFixed(0)} km/h`);
+    if(parts.length){ const bl=el('div','abase'); bl.innerHTML=`<b>vs your typical (${b.n} rides):</b> `+parts.join(' · '); body.append(bl); }
+  }).catch(()=>{});
+}
+/* median of metrics across this browser's saved sessions (IndexedDB) */
+async function boardBaseline(){
+  if(typeof idbAll!=='function') return null;
+  let recs=[]; try{ recs=await idbAll(); }catch(e){ return null; }
+  if(recs.length<2) return null;
+  const med=arr=>{ const a=arr.filter(x=>x!=null&&!isNaN(x)).sort((x,y)=>x-y); return a.length?a[Math.floor(a.length/2)]:null; };
+  const M=k=>med(recs.map(r=>r.metrics&&r.metrics[k]));
+  return { n:recs.length, whkm:M('whkm'), maxFet:M('maxFet'), top:M('top') };
 }
 
 /* ---------- Norms / reference view ---------- */

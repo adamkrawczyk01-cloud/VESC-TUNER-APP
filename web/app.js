@@ -19,6 +19,7 @@ let XRANGE = null;       // persistent x-axis zoom window (carried across views)
 let CURHUD = null;       // shared cursor readout element for the current view
 let VIEW = 'overview';
 let SMOOTH = { on:false, win:9 };                 // moving-average smoothing toggle
+let DECIMATE = { on:false, cap:4000 };            // chart point cap for huge sessions (off by default)
 let ANNOT = {};                                   // { sessionName: [{t,label}] }  persisted
 let THEME = localStorage.getItem('vesc_theme') || 'dark';
 try { ANNOT = JSON.parse(localStorage.getItem('vesc_annot')||'{}'); } catch(e){ ANNOT = {}; }
@@ -313,7 +314,15 @@ function plot(parent, title, xs0, lines, height=128, bands, opts={}) {
   const selBox = el('div','selstats'); body.parentElement.append(selBox);
   // smoothing applied to plotted values; raw kept for stats
   const plotted = lines.map(d => movavg(d.ys, SMOOTH.win));
-  const data = [xs0, ...plotted];
+  // optional decimation for huge sessions: stride xs + ys to a point cap.
+  // trades per-sample cursor HUD accuracy for render speed (off by default).
+  const decim = DECIMATE.on && xs0.length > DECIMATE.cap;
+  let X = xs0, shown = plotted;
+  if(decim){ const k=Math.ceil(xs0.length/DECIMATE.cap);
+    X=[]; for(let i=0;i<xs0.length;i+=k) X.push(xs0[i]);
+    shown = plotted.map(ys=>{ const o=[]; for(let i=0;i<ys.length;i+=k) o.push(ys[i]); return o; });
+  }
+  const data = [X, ...shown];
   const scales = { x:{ time:false } };
   lines.forEach(d => scales[d.scale||'y'] = scales[d.scale||'y'] || {});
   const series = [{}].concat(lines.map(d => ({
@@ -325,8 +334,8 @@ function plot(parent, title, xs0, lines, height=128, bands, opts={}) {
   const useAnnot = opts.annot !== false;
   const hooks = {
     setCursor:[uu=>{ const i=uu.cursor.idx;
-      lines.forEach((d,k)=>{ pills[k].textContent=(i!=null&&plotted[k]&&plotted[k][i]!=null)?(+plotted[k][i]).toFixed(d.dec??1):'–'; });
-      if(xs0===D.t){ if(CURSOR_CB) CURSOR_CB(i); if(CURHUD) writeCursorHud(i); }
+      lines.forEach((d,k)=>{ pills[k].textContent=(i!=null&&shown[k]&&shown[k][i]!=null)?(+shown[k][i]).toFixed(d.dec??1):'–'; });
+      if(!decim && xs0===D.t){ if(CURSOR_CB) CURSOR_CB(i); if(CURHUD) writeCursorHud(i); }
     }],
     setSelect:[uu=>{ selectionStats(uu, xs0, lines, selBox); }],
     setScale:[(uu,key)=>{ if(key!=='x' || xs0!==D.t) return; const s=uu.scales.x;

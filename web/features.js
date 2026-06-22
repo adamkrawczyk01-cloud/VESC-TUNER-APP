@@ -37,10 +37,12 @@ function exportPNG(){
 /* ---------- toolbar wiring ---------- */
 function syncToolButtons(){
   const s=$('#t-smooth'); if(s) s.classList.toggle('on', SMOOTH.on);
+  const d=$('#t-decim'); if(d) d.classList.toggle('on', DECIMATE.on);
 }
 (function wireToolbar(){
-  const s=$('#t-smooth'), th=$('#t-theme'), pg=$('#t-png'), cl=$('#t-clr');
+  const s=$('#t-smooth'), th=$('#t-theme'), pg=$('#t-png'), cl=$('#t-clr'), dc=$('#t-decim');
   if(s)  s.onclick =()=>{ SMOOTH.on=!SMOOTH.on; syncToolButtons(); if(typeof render==='function') render(VIEW); };
+  if(dc) dc.onclick=()=>{ DECIMATE.on=!DECIMATE.on; syncToolButtons(); if(typeof render==='function') render(VIEW); };
   if(th) th.onclick=()=> applyTheme(THEME==='dark'?'light':'dark');
   if(pg) pg.onclick = exportPNG;
   if(cl) cl.onclick=()=>{ if(!ANNOT[annotKey()]||!ANNOT[annotKey()].length){ return; }
@@ -65,4 +67,28 @@ window.addEventListener('appinstalled', ()=>{ const b=$('#t-install'); if(b) b.h
   b.onclick = async ()=>{ if(!DEFERRED_INSTALL) return;
     DEFERRED_INSTALL.prompt(); try{ await DEFERRED_INSTALL.userChoice; }catch(e){}
     DEFERRED_INSTALL=null; b.hidden=true; };
+})();
+
+/* ---------- mobile drawer + collapsible nav sections ---------- */
+(function wireNav(){
+  const mt=$('#menu-toggle');
+  if(mt) mt.onclick=(e)=>{ e.stopPropagation(); document.body.classList.toggle('nav-open'); };
+  // tap outside the drawer closes it
+  document.addEventListener('click', e=>{ if(document.body.classList.contains('nav-open')
+    && !e.target.closest('.sidebar') && !e.target.closest('#menu-toggle')) document.body.classList.remove('nav-open'); });
+  // close the drawer after picking a view on mobile
+  document.querySelectorAll('.navitem').forEach(b=> b.addEventListener('click', ()=>{
+    if(window.matchMedia('(max-width:760px)').matches) document.body.classList.remove('nav-open');
+  }));
+  // collapse a section by clicking its label; hides .navitem siblings until next label
+  let collapsed={}; try{ collapsed=JSON.parse(localStorage.getItem('vesc_nav_collapsed')||'{}'); }catch(e){}
+  const apply=(lbl)=>{ const key=lbl.textContent.trim(); const on=!!collapsed[key];
+    lbl.classList.toggle('collapsed', on);
+    let el=lbl.nextElementSibling;
+    while(el && !el.classList.contains('navlbl')){ if(el.classList.contains('navitem')) el.style.display=on?'none':''; el=el.nextElementSibling; } };
+  document.querySelectorAll('#nav .navlbl').forEach(lbl=>{ lbl.style.cursor='pointer'; lbl.title='collapse / expand';
+    apply(lbl);
+    lbl.addEventListener('click', ()=>{ const key=lbl.textContent.trim(); collapsed[key]=!collapsed[key];
+      try{ localStorage.setItem('vesc_nav_collapsed', JSON.stringify(collapsed)); }catch(e){} apply(lbl); });
+  });
 })();
