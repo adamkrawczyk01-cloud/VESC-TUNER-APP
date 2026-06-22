@@ -3,8 +3,14 @@
     {
       "id": "GAD",
       "name": "GAD",
-      "note": "Float Control rides",
+      "note": "rides",
       "rides": [
+        {
+          "name": "GAD session 004",
+          "file": "GAD_session_004.csv",
+          "src": "cardputer",
+          "date": "2026-06-20"
+        },
         {
           "name": "GAD Ride #17",
           "file": "FC_GAD_Ride_17.csv",
