@@ -592,25 +592,28 @@ static void parseImu(const uint8_t* p, int len) {
 static void buildProfileFromMcconf();  // forward decl
 static void saveProfileToSD();         // forward decl
 
-// COMM_GET_MCCONF — offsets within payload (after cmd byte), FW 6.x
-// Each field is int32 big-endian, scaled as noted
-#define MC_OFF_CURR_MAX    3   // /100
-#define MC_OFF_CURR_IN    11   // /100
-#define MC_OFF_ERPM       43   // /1
-#define MC_OFF_TFET_START 87   // /100
-#define MC_OFF_TFET_END   91   // /100
-#define MC_OFF_VCUT_START 95   // /100
-#define MC_OFF_VCUT_END   99   // /100
+// COMM_GET_MCCONF payload: [cmd 0x0e][signature:4][4 enum bytes][float32_auto…].
+// VESC float32_auto == IEEE-754 float32 BE, so read with rdF32be (NOT int32/100 —
+// that was the old bug, and offset 3 even landed inside the signature → garbage
+// like l_battery_cut_end=1587). The limits section starts at offset 9 (1 cmd +
+// 4 sig + 4 enums). Offsets below verified against the GAD board's mcconf blob:
+//   9=l_current_max(150) 13=l_current_min(-150) 17=l_in_current_max(70)
+//   21=l_in_current_min(-45) 29=l_abs_current_max(225).
+#define MC_OFF_CURR_MAX    9
+#define MC_OFF_CURR_MIN   13
+#define MC_OFF_CURR_IN    17
+#define MC_OFF_CURR_IN_MIN 21
+#define MC_OFF_ABS_CURR   29
 
 static void parseMcConf(const uint8_t* p, int len) {
-    if (len < 104 || p[0] != CMD_GET_MCCONF) return;
-    gMC.l_current_max       = rdI32(p, MC_OFF_CURR_MAX)    / 100.f;
-    gMC.l_in_current_max    = rdI32(p, MC_OFF_CURR_IN)     / 100.f;
-    gMC.l_max_erpm          = (float)rdI32(p, MC_OFF_ERPM);
-    gMC.l_temp_fet_start    = rdI32(p, MC_OFF_TFET_START)  / 100.f;
-    gMC.l_temp_fet_end      = rdI32(p, MC_OFF_TFET_END)    / 100.f;
-    gMC.l_battery_cut_start = rdI32(p, MC_OFF_VCUT_START)  / 100.f;
-    gMC.l_battery_cut_end   = rdI32(p, MC_OFF_VCUT_END)    / 100.f;
+    if (len < 33 || p[0] != CMD_GET_MCCONF) return;
+    gMC.l_current_max       = rdF32be(p, MC_OFF_CURR_MAX);
+    gMC.l_in_current_max    = rdF32be(p, MC_OFF_CURR_IN);
+    // l_max_erpm / l_temp_fet_* / l_battery_cut_* sit deeper in the blob and their
+    // exact offsets depend on the confgenerator layout for this fw signature
+    // (0x2efd0142) — not yet confirmed, so they keep their safe struct defaults
+    // rather than logging garbage. buildProfileFromMcconf derives cells from
+    // measured voltage, so it no longer needs l_battery_cut_end.
     gMC.loaded = true;
     // Build / refresh profile from fresh mcconf data
     if (!gSdOk || !SD.exists(PROFILE_PATH)) {
