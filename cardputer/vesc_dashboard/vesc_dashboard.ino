@@ -511,7 +511,13 @@ static void parseBms(const uint8_t* p, int len) {
         int16_t v = (int16_t)(((uint16_t)p[ind] << 8) | p[ind+1]);
         ind += 2; return v / sc;
     };
-    gBms.vTot = f32(1e6f);
+    // reject a corrupt/misaligned BMS frame at the source: an out-of-range pack
+    // voltage means the whole packet is garbage (we've seen vTot=1695V, cells
+    // -29V, temp 258°C). Drop it → keep last-good values, don't poison the SOC,
+    // the charge alarm or the logged CSV.
+    float vtot = f32(1e6f);
+    if (vtot < 20.f || vtot > 130.f) { gBms.valid = false; return; }
+    gBms.vTot = vtot;
     f32(1e6f);                              // v_charge
     gBms.iIn  = f32(1e6f);
     f32(1e6f);                              // i_in_ic
@@ -1291,7 +1297,7 @@ static uint16_t dutyCol(float d) {
 // Pack voltage for SOC / charge logic: prefer the BMS cell-sum (true cell state)
 // over the controller v_in, which the charger inflates while charging.
 static float packVoltage() {
-    return (gBms.valid && gBms.vTot > 1.f) ? gBms.vTot : gV.voltage;
+    return (gBms.valid && gBms.vTot > 20.f && gBms.vTot < 130.f) ? gBms.vTot : gV.voltage;
 }
 
 // Seed the system clock from the build date/time (the Cardputer has no RTC that
@@ -2633,6 +2639,9 @@ void setup() {
 // after the voltage drops ~1V (so the next full charge alerts again).
 static void checkChargeAlarm() {
     if (!(gV.valid || gBms.valid)) { gChargeAlarm = false; return; }
+    // only meaningful when parked/charging — never while riding (regen near full
+    // would false-fire). Riding = any real speed.
+    if (fabsf(gV.speed_kmh) > 1.5f) { gChargeAlarm = false; gChargePingStep = -1; return; }
     float v = packVoltage();             // BMS cell-sum (true), not charger-inflated v_in
     if (v < 1.f) { gChargeAlarm = false; return; }
     int cells = (gProfile.batt_cells >= 4 && gProfile.batt_cells <= 32) ? gProfile.batt_cells : N_CELLS_DEF;
