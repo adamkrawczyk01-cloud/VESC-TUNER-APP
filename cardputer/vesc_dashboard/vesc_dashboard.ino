@@ -292,6 +292,63 @@ static int      gSetupDbgN = 0, gImuDbgN = 0;
 static uint32_t gLastCsvMs = 0;
 static uint32_t gTripMs    = 0;
 
+// ── GPS (M5Stack GPS Unit v1.1, NMEA over the Grove UART) ─────────────────────
+//  Plug the unit into the Cardputer Grove port. Grove pins = G1 (GPIO1) /
+//  G2 (GPIO2). No fix after ~1 min outdoors? swap GPS_RX/TX, or try 38400 baud.
+#define GPS_RX_PIN 1          // Cardputer Grove G1  ← GPS unit TX
+#define GPS_TX_PIN 2          // Cardputer Grove G2  → GPS unit RX (we don't send)
+#define GPS_BAUD   9600
+static HardwareSerial gpsSerial(1);
+struct GpsData {
+    double   lat = 0, lon = 0;
+    float    alt = 0, spd_kmh = 0;
+    int      sats = 0;
+    bool     fix = false;
+    uint32_t lastFixMs = 0;
+};
+static GpsData gGps;
+static char gNmea[100];
+static int  gNmeaLen = 0;
+
+// NMEA ddmm.mmmm + hemisphere → signed decimal degrees
+static double nmeaToDeg(const char* v, const char* hemi) {
+    if (!v || !v[0]) return 0;
+    double raw = atof(v);
+    int deg = (int)(raw / 100);
+    double d = deg + (raw - deg * 100) / 60.0;
+    if (hemi[0] == 'S' || hemi[0] == 'W') d = -d;
+    return d;
+}
+static void parseNmea(char* s) {
+    char* f[20]; int n = 0; f[n++] = s;
+    for (char* p = s; *p && n < 20; p++) if (*p == ',') { *p = 0; f[n++] = p + 1; }
+    if (n < 1) return;
+    if (strstr(f[0], "GGA") && n >= 10) {                 // fix quality, sats, altitude
+        gGps.sats = atoi(f[7]);
+        if (atoi(f[6]) > 0 && f[2][0]) {
+            gGps.lat = nmeaToDeg(f[2], f[3]);
+            gGps.lon = nmeaToDeg(f[4], f[5]);
+            gGps.alt = atof(f[9]);
+            gGps.fix = true; gGps.lastFixMs = millis();
+        }
+    } else if (strstr(f[0], "RMC") && n >= 8) {            // validity, position, ground speed
+        if (f[2][0] == 'A' && f[3][0]) {
+            gGps.lat = nmeaToDeg(f[3], f[4]);
+            gGps.lon = nmeaToDeg(f[5], f[6]);
+            gGps.spd_kmh = atof(f[7]) * 1.852f;            // knots → km/h
+            gGps.fix = true; gGps.lastFixMs = millis();
+        }
+    }
+}
+static void gpsPoll() {
+    while (gpsSerial.available()) {
+        char c = gpsSerial.read();
+        if (c == '\n') { gNmea[gNmeaLen] = 0; if (gNmeaLen > 5 && gNmea[0] == '$') parseNmea(gNmea + 1); gNmeaLen = 0; }
+        else if (c != '\r' && gNmeaLen < (int)sizeof(gNmea) - 1) gNmea[gNmeaLen++] = c;
+    }
+    if (gGps.fix && millis() - gGps.lastFixMs > 3000) gGps.fix = false;   // stale → drop fix
+}
+
 static M5Canvas canvas(&M5Cardputer.Display);
 
 // ── NimBLE handles ───────────────────────────────────────────────────────────
@@ -1108,6 +1165,7 @@ static void csvWriteHeader() {
     f.print("bms_v_tot,bms_i_in,cell_min,cell_max,cell_delta_mV");
     for (int i = 1; i <= 20; i++) f.printf(",cell_%02d", i);
     for (int i = 1; i <= 6;  i++) f.printf(",bms_temp_%02d", i);
+    f.print(",gps_lat,gps_lon,altitude_m,gps_spd_kmh,gps_sats");
     f.println();
     f.close();
 }
@@ -1147,6 +1205,7 @@ static void csvAppend() {
     for (int i = 0; i < 6; i++) {
         if (i < gBms.tempNum) f.printf(",%.1f", gBms.temp[i]); else f.print(",");
     }
+    f.printf(",%.6f,%.6f,%.1f,%.2f,%d", gGps.lat, gGps.lon, gGps.alt, gGps.spd_kmh, gGps.sats);
     f.println();
     f.close();
 }
@@ -1891,6 +1950,10 @@ static void drawRide() {
     canvas.fillCircle(fx + 15, 6, 2, gV.adc1 > 0.25f ? C_OK : C_DGREY);
     canvas.setTextColor(C_DGREY); canvas.drawString("F2", fx + 22, 2);
     canvas.fillCircle(fx + 37, 6, 2, gV.adc2 > 0.25f ? C_OK : C_DGREY);
+    // GPS: green "GPS" + sat count when we have a fix
+    canvas.setTextColor(gGps.fix ? C_OK : C_DGREY); canvas.drawString("GPS", 120, 2);
+    char gsb[6]; snprintf(gsb, sizeof(gsb), "%d", gGps.sats);
+    canvas.setTextColor(C_GREY); canvas.drawString(gsb, 140, 2);
     uint32_t ts = gRec ? (millis() - gTripMs) / 1000 : 0;
     char rc[8]; snprintf(rc, sizeof(rc), "%02u:%02u", (unsigned)(ts/60), (unsigned)(ts%60));
     canvas.setTextDatum(TR_DATUM); canvas.setTextColor(C_GREY); canvas.drawString(rc, DW - 3, 2);
@@ -2578,6 +2641,7 @@ void setup() {
     M5Cardputer.Display.setBrightness(120);
     { Preferences p; p.begin("vesc", true); gVolume = p.getUChar("vol", 160); p.end(); }
     M5Cardputer.Speaker.setVolume(gVolume);   // restored volume (Q/W adjust)
+    gpsSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);   // GPS Unit on Grove
     Serial.printf("[BOOT] M5 begin ok, disp %dx%d\n",
                   (int)M5Cardputer.Display.width(), (int)M5Cardputer.Display.height());
 
@@ -2705,6 +2769,7 @@ void loop() {
     checkDutyAlarm();
 
     if (gWifiOn) gWeb.handleClient();   // serve LAN requests (download / live)
+    gpsPoll();                          // drain GPS NMEA every loop
 
     uint32_t now = millis();
 
