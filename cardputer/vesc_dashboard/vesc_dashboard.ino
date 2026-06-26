@@ -295,9 +295,9 @@ static uint32_t gTripMs    = 0;
 // ── GPS (M5Stack GPS Unit v1.1, NMEA over the Grove UART) ─────────────────────
 //  Plug the unit into the Cardputer Grove port. Grove pins = G1 (GPIO1) /
 //  G2 (GPIO2). No fix after ~1 min outdoors? swap GPS_RX/TX, or try 38400 baud.
-#define GPS_RX_PIN 1          // Cardputer Grove G1  ← GPS unit TX
+#define GPS_RX_PIN 1          // Cardputer Grove G1  ← GPS unit TX  (verified)
 #define GPS_TX_PIN 2          // Cardputer Grove G2  → GPS unit RX (we don't send)
-#define GPS_BAUD   9600
+#define GPS_BAUD   115200     // M5 GPS Unit v1.1 (AT6558) streams NMEA @115200, not 9600
 static HardwareSerial gpsSerial(1);
 struct GpsData {
     double   lat = 0, lon = 0;
