@@ -30,6 +30,22 @@ Control handshake quirks (FW_VERSION/MTU); latency. Mitigate: raw relay, no doub
 
 ---
 
+## 🪖 Concept: Helmet HUD (design only — see memory helmet-hud-concept)
+
+Miniaturize the Cardputer rig into a helmet heads-up display.
+- Architecture: board unit (BLE→VESC, SD black box) **broadcasts ESP-NOW** → helmet
+  unit (tiny ESP32-S3 + small display + opt. GPS) renders a glanceable HUD. ESP-NOW
+  avoids the VESC single-BLE-link contention.
+- Helmet BOM: XIAO ESP32-S3 / StampS3 · ATGM336H GPS (115200) · 500–1000 mAh LiPo ·
+  3D pod + boom. Display over SPI (like ST7789), NOT MIPI/HDMI microdisplays.
+- Optics phased: T1 boom screen in periphery (glanceable) → T2 micro-OLED + 45°
+  combiner on visor (distance-focused, bright for sunlight, transparent OLED ideal).
+- Safety: no shell drilling, breakaway/soft mount, low mass near shell, periphery
+  not central, minimal UI, collimated focus. Distraction + crash impact = real risks.
+- Phases: P0 ESP-NOW link · P1 boom+UI · P2 power+mount · P3 combiner · P4 polish.
+
+---
+
 ## Backlog / deferred
 
 - [~] **After-ride verification:** session_008 (observer_type 2→3) vs session_004 →
