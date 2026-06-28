@@ -286,6 +286,8 @@ static uint8_t  gVolume = 160;           // speaker volume (Q quieter / W louder
 static uint32_t gLastBmsMs = 0;
 static uint32_t gLastSetupMs = 0;
 static uint32_t gLastImuMs = 0;
+static uint32_t gLastValRx = 0;          // millis() of last FRESH GET_VALUES parse
+static uint32_t gLastAllRx = 0;          // millis() of last FRESH GET_ALLDATA (footpads) parse
 static int      gBmsDbgN   = 0;          // serial-dump first few BMS replies
 static int      gBmsReplies = 0;         // total BMS responses seen (diagnostic)
 static int      gSetupDbgN = 0, gImuDbgN = 0;
@@ -488,6 +490,7 @@ static void vescSendCustomCfg() {
 // COMM_GET_VALUES (FW 6.x payload layout after cmd byte)
 static void parseValues(const uint8_t* p, int len) {
     if (len < 50 || p[0] != CMD_GET_VALUES) return;
+    gLastValRx = millis();               // fresh values arrived
     gV.temp_fet   = rdI16(p,  1) / 10.f;
     gV.temp_mot   = rdI16(p,  3) / 10.f;
     gV.curr_mot   = rdI32(p,  5) / 100.f;
@@ -550,6 +553,7 @@ static void parseAllData(const uint8_t* p, int len) {
     gV.booster     = (int)p[22] - 128;
     if (len > 34) { int f = p[34]; gV.foc_id = (f == 222) ? 0 : f / 3.f; }
     gV.refloat     = true;
+    gLastAllRx     = millis();           // fresh footpad/Refloat data arrived
 }
 
 // Parse COMM_BMS_GET_VALUES (96) — Smart BMS aggregated by the VESC over CAN.
@@ -1166,6 +1170,7 @@ static void csvWriteHeader() {
     for (int i = 1; i <= 20; i++) f.printf(",cell_%02d", i);
     for (int i = 1; i <= 6;  i++) f.printf(",bms_temp_%02d", i);
     f.print(",gps_lat,gps_lon,altitude_m,gps_spd_kmh,gps_sats");
+    f.print(",val_age_ms,fp_age_ms");   // ms since last FRESH values / footpad data (staleness)
     f.println();
     f.close();
 }
@@ -1206,6 +1211,10 @@ static void csvAppend() {
         if (i < gBms.tempNum) f.printf(",%.1f", gBms.temp[i]); else f.print(",");
     }
     f.printf(",%.6f,%.6f,%.1f,%.2f,%d", gGps.lat, gGps.lon, gGps.alt, gGps.spd_kmh, gGps.sats);
+    uint32_t va = gLastValRx ? (millis() - gLastValRx) : 9999;
+    uint32_t fa = gLastAllRx ? (millis() - gLastAllRx) : 9999;
+    if (va > 9999) va = 9999;  if (fa > 9999) fa = 9999;
+    f.printf(",%lu,%lu", (unsigned long)va, (unsigned long)fa);   // staleness markers
     f.println();
     f.close();
 }
@@ -2778,9 +2787,10 @@ void loop() {
         gLastValMs = now;
         vescSend(CMD_GET_VALUES);
     }
-    // Poll Refloat GET_ALLDATA @ 5Hz for pitch/roll/state (float boards only;
-    // harmless no-op on classic VESC which won't answer the Refloat command)
-    if (gBleOk && now - gLastAllMs >= 200) {
+    // Poll Refloat GET_ALLDATA @ 12Hz for pitch/roll/state + FOOTPADS (float boards
+    // only; harmless no-op on classic VESC). Was 5Hz — bumped so footpads aren't
+    // stale during fast events (the burnout case where adc looked frozen).
+    if (gBleOk && now - gLastAllMs >= 83) {
         gLastAllMs = now;
         vescSendAllData();
     }
