@@ -6,6 +6,20 @@
       "note": "rides",
       "rides": [
         {
+          "name": "GAD session 010",
+          "file": "GAD_session_010.csv",
+          "src": "cardputer",
+          "date": "2026-06-26",
+          "mcconf": "GAD_session_010_mcconf.bin"
+        },
+        {
+          "name": "GAD session 009",
+          "file": "GAD_session_009.csv",
+          "src": "cardputer",
+          "date": "2026-06-26",
+          "mcconf": "GAD_session_009_mcconf.bin"
+        },
+        {
           "name": "GAD session 004",
           "file": "GAD_session_004.csv",
           "src": "cardputer",
