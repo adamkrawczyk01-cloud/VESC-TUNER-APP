@@ -2643,10 +2643,11 @@ static void drawWifi() {
 //  toggled it changes channel/mode and ESP-NOW pauses until reboot.
 // ─────────────────────────────────────────────────────────────────────────────
 typedef struct __attribute__((packed)) {
-    uint8_t magic, ver, board_id, flags;       // flags bit0=braking, bit1=footpad on
-    uint8_t batt_pct, duty_limit, motor_temp, bright, gps_sats;
-    int16_t speed_x10, duty_x10;
-    uint8_t seq;
+    uint8_t  magic, ver, board_id, flags;      // flags bit0=braking, bit1=footpad on
+    uint8_t  batt_pct, duty_limit, motor_temp, batt_temp, gps_sats, cells, bright;
+    int16_t  speed_x10, duty_x10;
+    uint16_t pack_v_x10;                        // pack voltage *10
+    uint8_t  seq;
 } hud_pkt_t;
 static uint8_t  HUD_BCAST[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
 static bool     gEspNowOk = false;
@@ -2679,10 +2680,13 @@ static void espnowSend() {
     p.batt_pct   = (uint8_t)constrain(batt, 0, 100);
     p.duty_limit = (uint8_t)(gProfile.tiltback_duty > 0 ? gProfile.tiltback_duty : 80);
     p.motor_temp = (uint8_t)constrain((int)gV.temp_mot, 0, 200);
+    p.batt_temp  = (uint8_t)constrain((int)(gV.bms ? gV.temp_bat : 0.f), 0, 200);
     p.bright     = 40;
     p.gps_sats   = (uint8_t)constrain(gGps.sats, 0, 99);
+    p.cells      = (uint8_t)constrain(gProfile.batt_cells, 0, 60);
     p.speed_x10  = (int16_t)(gV.speed_kmh * 10);
     p.duty_x10   = (int16_t)(gV.duty_pct * 10);
+    p.pack_v_x10 = (uint16_t)constrain((int)(packVoltage() * 10), 0, 65535);
     p.seq        = gEspSeq++;
     esp_now_send(HUD_BCAST, (uint8_t*)&p, sizeof(p));
 }

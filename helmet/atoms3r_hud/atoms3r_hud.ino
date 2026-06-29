@@ -23,15 +23,15 @@
 #define PANEL_TOP    0
 #define PANEL_BOTTOM 1
 #define PKT_MAGIC    0xBE
-#define SCREEN_ROT   3     // USB-C on the right, content upright
+#define SCREEN_ROT   1     // USB-C on the right, content upright (ST7735S offset_rotation=2)
 #define HUD_NAME     "VHUD"   // boot branding
 
 // ESP-NOW packet (defined up here so Arduino's auto-prototypes see the type)
 typedef struct __attribute__((packed)) {
   uint8_t  magic, ver, board_id, flags;      // flags bit0=braking (reserved: rear light)
-  uint8_t  batt_pct, duty_limit, motor_temp;
-  uint8_t  bright, gps_sats;
+  uint8_t  batt_pct, duty_limit, motor_temp, batt_temp, gps_sats, cells, bright;
   int16_t  speed_x10, duty_x10;
+  uint16_t pack_v_x10;
   uint8_t  seq;
 } hud_pkt_t;
 
@@ -100,41 +100,41 @@ static void onRecv(const esp_now_recv_info_t*, const uint8_t* data, int len){
 }
 
 // screen pages: short-click cycles; long-press cycles brightness (6 levels)
-enum { PG_SPEED, PG_BATT, PG_TEMP, PG_DUTY, PG_GPS, PG_COUNT };
+enum { PG_SPEED, PG_BATT, PG_BATTV, PG_CELLV, PG_TEMP, PG_BTEMP, PG_DUTY, PG_GPS, PG_COUNT };
 static int gPage = PG_SPEED;
-static long gLastKey = -1;
 static const uint8_t PX_LEVELS[6]  = {  3, 10, 25, 55, 110, 200 };   // LED panel
 static const uint8_t LCD_LEVELS[6] = { 20, 50, 90,140, 200, 255 };   // screen backlight
 static int gBrightIdx = 2;
 
+static char gLastStr[12] = ""; static int gLastPg = -1; static bool gLastLink = false;
 static void drawScreen(bool link, const hud_pkt_t& p){
-  const char* lab; int val;
-  float spd = p.speed_x10/10.0f, duty = p.duty_x10/10.0f;
+  const char* lab; char v[12];
+  float spd = p.speed_x10/10.0f, duty = p.duty_x10/10.0f, packv = p.pack_v_x10/10.0f;
   switch (gPage){
-    case PG_BATT: lab="BATTERY %"; val=p.batt_pct; break;
-    case PG_TEMP: lab="MOTOR \xB0""C"; val=p.motor_temp; break;
-    case PG_DUTY: lab="DUTY %";    val=(int)roundf(duty); break;
-    case PG_GPS:  lab="GPS sat";   val=p.gps_sats; break;
-    default:      lab="SPEED km/h"; val=(int)roundf(spd);
+    case PG_BATT:  lab="BATTERY %"; snprintf(v,sizeof(v),"%d", p.batt_pct); break;
+    case PG_BATTV: lab="BATT V";    snprintf(v,sizeof(v),"%.1f", packv); break;
+    case PG_CELLV: lab="CELL V";    snprintf(v,sizeof(v),"%.2f", p.cells? packv/p.cells : 0.f); break;
+    case PG_TEMP:  lab="MOTOR \xB0""C"; snprintf(v,sizeof(v),"%d", p.motor_temp); break;
+    case PG_BTEMP: lab="BATT \xB0""C";  snprintf(v,sizeof(v),"%d", p.batt_temp); break;
+    case PG_DUTY:  lab="DUTY %";    snprintf(v,sizeof(v),"%d", (int)roundf(duty)); break;
+    case PG_GPS:   lab="GPS sat";   snprintf(v,sizeof(v),"%d", p.gps_sats); break;
+    default:       lab="SPEED km/h"; snprintf(v,sizeof(v),"%d", (int)roundf(spd));
   }
-  long key = (long)gPage*100000 + (link?1:0)*10000 + (link?val:-1);
-  if (key == gLastKey) return;                 // redraw only on change
-  gLastKey = key;
+  if (!link) strcpy(v, "--");
+  if (gPage==gLastPg && link==gLastLink && strcmp(v,gLastStr)==0) return;   // redraw on change only
+  gLastPg=gPage; gLastLink=link; strncpy(gLastStr, v, sizeof(gLastStr)-1);
 
   const int W = lcd.width(), H = lcd.height(), BAR = 28;
-  lcd.fillScreen(TFT_BLACK);                          // black background
-  // top label "belka": white text + white divider line
+  lcd.fillScreen(TFT_BLACK);
   lcd.setTextDatum(middle_center);
   lcd.setFont(&fonts::Font0); lcd.setTextSize(2); lcd.setTextColor(TFT_WHITE);
   lcd.drawString(link?lab:"NO LINK", W/2, BAR/2 - 1);
   lcd.drawFastHLine(0, BAR-1, W, TFT_WHITE);
-  // big WHITE number, auto-sized to fill the whole area below the bar
-  char b[8]; snprintf(b,sizeof(b), link?"%d":"--", val);
   lcd.setFont(&fonts::Font7); lcd.setTextColor(TFT_WHITE);
   int s = 8;
-  for (; s > 1; s--){ lcd.setTextSize(s); if (lcd.textWidth(b) <= W-6 && lcd.fontHeight() <= H-BAR-6) break; }
+  for (; s > 1; s--){ lcd.setTextSize(s); if (lcd.textWidth(v) <= W-6 && lcd.fontHeight() <= H-BAR-6) break; }
   lcd.setTextSize(s); lcd.setTextDatum(middle_center);
-  lcd.drawString(b, W/2, BAR + (H-BAR)/2);
+  lcd.drawString(v, W/2, BAR + (H-BAR)/2);
 }
 
 void setup(){
@@ -163,7 +163,7 @@ void loop(){
   if (M5.BtnA.wasHold()){                       // long-press: cycle brightness (LEDs + screen)
     gBrightIdx = (gBrightIdx+1) % 6; lcdBacklight(LCD_LEVELS[gBrightIdx]);
   } else if (M5.BtnA.wasClicked()){             // short click: cycle HUD value
-    gPage = (gPage+1) % PG_COUNT; gLastKey = -1;
+    gPage = (gPage+1) % PG_COUNT; gLastPg = -1;
   }
   uint32_t now = millis();
   bool link = (now - gLastRx) < 1000;
