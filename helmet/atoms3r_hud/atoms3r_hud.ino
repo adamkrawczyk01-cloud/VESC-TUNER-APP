@@ -24,6 +24,7 @@
 #define PANEL_BOTTOM 1
 #define PKT_MAGIC    0xBE
 #define SCREEN_ROT   3     // USB-C on the right, content upright
+#define HUD_NAME     "VHUD"   // boot branding
 
 // ESP-NOW packet (defined up here so Arduino's auto-prototypes see the type)
 typedef struct __attribute__((packed)) {
@@ -76,6 +77,20 @@ static void vbarC(int x0,int x1,float frac,uint32_t c){
     for (int x=x0;x<=x1;x++) px.setPixelColor(xy(x,y), cc);
   }
 }
+// boot animation: gauge sweep on the bars + white flash (car-dash style)
+static void bootAnim(){
+  for (int h=0; h<=16; h++){
+    px.clear();
+    vbarC(0,1, h/16.0f, px.Color(0,150,255));
+    vbarC(3,4, h/16.0f, px.Color(255,150,0));
+    vbarC(6,6, h/16.0f, px.Color(0,200,0));
+    vbarC(7,7, h/16.0f, px.Color(255,80,0));
+    px.show(); delay(30);
+  }
+  for (int i=0;i<NUM_LEDS;i++) px.setPixelColor(i, px.Color(150,150,150));
+  px.show(); delay(140);
+  px.clear(); px.show();
+}
 static void onRecv(const esp_now_recv_info_t*, const uint8_t* data, int len){
   if (len == (int)sizeof(hud_pkt_t) && data[0] == PKT_MAGIC){
     memcpy((void*)&gPkt, data, sizeof(hud_pkt_t));
@@ -122,15 +137,20 @@ void setup(){
   M5.begin(cfg);                               // board power + internal I2C
   lcd.init(); lcd.setRotation(SCREEN_ROT);      // USB-C on the right
   lcdBacklight(180);
-  lcd.fillScreen(TFT_BLUE);                     // boot splash (proves LCD works)
-  lcd.setTextDatum(middle_center); lcd.setTextColor(TFT_WHITE); lcd.setTextSize(2);
-  lcd.drawString("HUD", lcd.width()/2, lcd.height()/2);
+  // boot splash: VHUD name
+  lcd.fillScreen(TFT_BLACK);
+  lcd.setTextDatum(middle_center); lcd.setTextColor(TFT_WHITE);
+  lcd.setFont(&fonts::Font0); lcd.setTextSize(3);
+  lcd.drawString(HUD_NAME, lcd.width()/2, lcd.height()/2 - 8);
+  lcd.setTextSize(1); lcd.setTextColor(lcd.color565(120,120,120));
+  lcd.drawString("PEV heads-up", lcd.width()/2, lcd.height()/2 + 22);
 
   px.begin(); px.setBrightness(20); px.clear(); px.show();
+  bootAnim();                                   // gauge sweep on the LEDs
 
   WiFi.mode(WIFI_STA); WiFi.disconnect();
   if (esp_now_init() == ESP_OK) esp_now_register_recv_cb(onRecv);
-  delay(400);
+  delay(300);
 }
 
 void loop(){

@@ -43,6 +43,7 @@
 #include <Preferences.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <esp_now.h>
 #include <ESPmDNS.h>
 #include <math.h>
 #include <time.h>
@@ -2637,6 +2638,55 @@ static void drawWifi() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+//  Helmet HUD broadcast (ESP-NOW) — read-only: just mirrors telemetry to the HUD.
+//  Coexists with BLE; uses WiFi STA (no AP). If the WiFi-LAN download feature is
+//  toggled it changes channel/mode and ESP-NOW pauses until reboot.
+// ─────────────────────────────────────────────────────────────────────────────
+typedef struct __attribute__((packed)) {
+    uint8_t magic, ver, board_id, flags;       // flags bit0=braking, bit1=footpad on
+    uint8_t batt_pct, duty_limit, motor_temp, bright;
+    int16_t speed_x10, duty_x10;
+    uint8_t seq;
+} hud_pkt_t;
+static uint8_t  HUD_BCAST[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
+static bool     gEspNowOk = false;
+static uint32_t gLastEspMs = 0;
+static uint8_t  gEspSeq = 0;
+
+static void espnowInit() {
+    if (WiFi.getMode() == WIFI_OFF) WiFi.mode(WIFI_STA);
+    if (esp_now_init() != ESP_OK) { gEspNowOk = false; return; }
+    esp_now_peer_info_t peer = {};
+    memcpy(peer.peer_addr, HUD_BCAST, 6);
+    peer.channel = 0; peer.encrypt = false;
+    esp_now_add_peer(&peer);
+    gEspNowOk = true;
+    Serial.println("[ESP-NOW] HUD broadcast ready");
+}
+static void espnowSend() {
+    if (!gEspNowOk || !gV.valid) return;
+    hud_pkt_t p;
+    p.magic = 0xBE; p.ver = 1; p.board_id = 1;
+    uint8_t fl = 0;
+    if (gV.curr_mot < -8.f)                 fl |= 0x01;   // regen / braking
+    if (gV.adc1 > 0.25f || gV.adc2 > 0.25f) fl |= 0x02;   // footpad engaged
+    p.flags = fl;
+    int batt = (int)gV.batt_pct;
+    if (batt <= 0 && gProfile.batt_cells > 0) {
+        float vc = packVoltage() / gProfile.batt_cells;
+        batt = (int)((vc - 3.0f) / 1.2f * 100.f);
+    }
+    p.batt_pct   = (uint8_t)constrain(batt, 0, 100);
+    p.duty_limit = (uint8_t)(gProfile.tiltback_duty > 0 ? gProfile.tiltback_duty : 80);
+    p.motor_temp = (uint8_t)constrain((int)gV.temp_mot, 0, 200);
+    p.bright     = 40;
+    p.speed_x10  = (int16_t)(gV.speed_kmh * 10);
+    p.duty_x10   = (int16_t)(gV.duty_pct * 10);
+    p.seq        = gEspSeq++;
+    esp_now_send(HUD_BCAST, (uint8_t*)&p, sizeof(p));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 //  setup()
 // ─────────────────────────────────────────────────────────────────────────────
 void setup() {
@@ -2651,6 +2701,7 @@ void setup() {
     { Preferences p; p.begin("vesc", true); gVolume = p.getUChar("vol", 160); p.end(); }
     M5Cardputer.Speaker.setVolume(gVolume);   // restored volume (Q/W adjust)
     gpsSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);   // GPS Unit on Grove
+    espnowInit();                                                    // helmet HUD broadcast
     Serial.printf("[BOOT] M5 begin ok, disp %dx%d\n",
                   (int)M5Cardputer.Display.width(), (int)M5Cardputer.Display.height());
 
@@ -2779,6 +2830,7 @@ void loop() {
 
     if (gWifiOn) gWeb.handleClient();   // serve LAN requests (download / live)
     gpsPoll();                          // drain GPS NMEA every loop
+    if (millis() - gLastEspMs >= 50) { gLastEspMs = millis(); espnowSend(); }  // HUD @20Hz
 
     uint32_t now = millis();
 
