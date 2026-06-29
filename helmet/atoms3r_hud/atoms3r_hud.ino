@@ -32,8 +32,32 @@ typedef struct __attribute__((packed)) {
   uint8_t  batt_pct, duty_limit, motor_temp, batt_temp, fet_temp, gps_sats, cells, bright;
   int16_t  speed_x10, duty_x10;
   uint16_t pack_v_x10;
-  uint8_t  seq;
+  uint8_t  alert, seq;
 } hud_pkt_t;
+
+// 16x8 LANDSCAPE icons (8 rows x 16 cols, '#'=lit). Mapped to the panel like the bars.
+static const char* IC_TEMP[8] = {     // °C  (overtemp)
+  "##..............","##....#####.....",".....##...##....","....##..........",
+  "....##..........","....##..........",".....##...##....","......#####....."};
+static const char* IC_BOLT[8] = {     // lightning (electrical)
+  "..........###...",".......#####....","....#####.......",".###########....",
+  "....###########.","........#####...",".......###......","......##........"};
+static const char* IC_BATT[8] = {     // battery (low)
+  "................",".############...",".#..........###.",".###........#.#.",
+  ".###........#.#.",".#..........###.",".############...","................"};
+static const char* IC_WARN[8] = {     // warning triangle (generic fault)
+  ".......##.......","......####......",".....##.###.....","....##.##.##....",
+  "...##..##..##...","..##...##...##..",".##############.","................"};
+static const char* const* ICONS[4] = { IC_TEMP, IC_BOLT, IC_BATT, IC_WARN };
+
+struct AlertDef { uint8_t icon; bool red; const char* name; };  // icon: 0=°C,1=bolt,2=batt,3=warn
+static const AlertDef ALERTS[] = {
+  {3,true,""}, {1,true,"OVERCURR"}, {1,true,"OVER-VOLT"}, {1,true,"LOW VOLT"}, {1,true,"DRV"},
+  {0,false,"FET WARM"}, {0,true,"FET HOT"}, {0,false,"MOT WARM"}, {0,true,"MOTOR HOT"},
+  {0,true,"BATT HOT"}, {2,false,"LOW BATT"}, {2,true,"BATT CRIT"}, {3,true,"FAULT"} };
+static const int ALERT_N = sizeof(ALERTS)/sizeof(ALERTS[0]);
+#define ICON_FLIP_X 0
+#define ICON_FLIP_Y 0
 
 // ---- hand-built AtomS3R LCD (GC9107 on SPI3); backlight done separately ----
 class LGFX_AtomS3R : public lgfx::LGFX_Device {
@@ -77,6 +101,15 @@ static void vbarC(int x0,int x1,float frac,uint32_t c){
     int lvl = 15 - y; uint32_t cc = (lvl < h) ? c : 0;
     for (int x=x0;x<=x1;x++) px.setPixelColor(xy(x,y), cc);
   }
+}
+// draw a 16x8 landscape icon (rows->panel-x, cols->panel-y) in colour c
+static void drawIcon(const char* const* ic, uint32_t c){
+  for (int r=0;r<8;r++) for (int col=0;col<16;col++)
+    if (ic[r][col]=='#'){
+      int cx = ICON_FLIP_X ? 7-r   : r;     // panel x 0..7
+      int cy = ICON_FLIP_Y ? 15-col: col;   // panel y 0..15
+      px.setPixelColor(xy(cx,cy), c);
+    }
 }
 // boot animation: gauge sweep on the bars + white flash (car-dash style)
 static void bootAnim(){
@@ -137,6 +170,16 @@ static void drawScreen(bool link, const hud_pkt_t& p){
   lcd.setTextSize(s); lcd.setTextDatum(middle_center);
   lcd.drawString(v, W/2, BAR + (H-BAR)/2);
 }
+static void drawAlertScreen(const AlertDef& ad){
+  uint16_t col = ad.red ? TFT_RED : (uint16_t)lcd.color565(255,150,0);
+  lcd.fillScreen(TFT_BLACK);
+  lcd.setTextDatum(middle_center); lcd.setTextColor(col);
+  lcd.setFont(&fonts::Font0); lcd.setTextSize(2);
+  lcd.drawString("! ALERT", lcd.width()/2, 20);
+  lcd.setTextSize(3);
+  if (lcd.textWidth(ad.name) > lcd.width()-4) lcd.setTextSize(2);
+  lcd.drawString(ad.name, lcd.width()/2, lcd.height()/2 + 10);
+}
 
 void setup(){
   auto cfg = M5.config();
@@ -170,9 +213,26 @@ void loop(){
   bool link = (now - gLastRx) < 1000;
   hud_pkt_t p; memcpy(&p, (const void*)&gPkt, sizeof(p));
 
-  // ---- LED panel: 4 vertical bars ----
+  // ---- alert handling: show icon+name 4s, repeat every 10s while it persists ----
+  static uint8_t gAlertCode = 0; static uint32_t gAlertStart = 0; static uint8_t gAlarmShown = 0;
+  uint8_t a = link ? p.alert : 0;
+  if (a >= ALERT_N) a = 12;
+  if (a == 0) gAlertCode = 0;
+  else if (a != gAlertCode){ gAlertCode = a; gAlertStart = now; }
+  else if (now - gAlertStart >= 10000){ gAlertStart = now; }
+  bool alarm = gAlertCode && (now - gAlertStart < 4000);
+
+  // ---- LED panel: alert icon OR 4 vertical bars ----
   px.setBrightness(PX_LEVELS[gBrightIdx]);      // local brightness (long-press cycles)
   px.clear();
+  if (alarm){
+    const AlertDef& ad = ALERTS[gAlertCode];
+    drawIcon(ICONS[ad.icon], ad.red ? px.Color(255,0,0) : px.Color(255,150,0));
+    px.show();
+    if (gAlertCode != gAlarmShown){ drawAlertScreen(ad); gAlarmShown = gAlertCode; }
+    delay(8); return;
+  }
+  if (gAlarmShown){ gLastPg = -1; gAlarmShown = 0; }   // alarm ended → force normal redraw
   if (link){
     float spd = p.speed_x10/10.0f, duty = p.duty_x10/10.0f;
     float k = constrain((spd-25.0f)/15.0f, 0.f, 1.f);

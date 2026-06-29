@@ -2647,7 +2647,7 @@ typedef struct __attribute__((packed)) {
     uint8_t  batt_pct, duty_limit, motor_temp, batt_temp, fet_temp, gps_sats, cells, bright;
     int16_t  speed_x10, duty_x10;
     uint16_t pack_v_x10;                        // pack voltage *10
-    uint8_t  seq;
+    uint8_t  alert, seq;                        // alert id (0=none); see computeAlert()
 } hud_pkt_t;
 static uint8_t  HUD_BCAST[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
 static bool     gEspNowOk = false;
@@ -2663,6 +2663,28 @@ static void espnowInit() {
     esp_now_add_peer(&peer);
     gEspNowOk = true;
     Serial.println("[ESP-NOW] HUD broadcast ready");
+}
+// alert id (HUD shows icon+name): 1 OVERCURR,2 OVERVOLT,3 LOWVOLT,4 DRV,5 FETwarn,
+// 6 FEThot,7 MOTwarn,8 MOThot,9 BATThot,10 LOWBATT,11 BATTcrit,12 generic fault. 0=none.
+static uint8_t computeAlert() {
+    switch (gV.fault) {                       // hard VESC faults first
+        case 1: return 2;   // over-voltage
+        case 2: return 3;   // under-voltage
+        case 3: return 4;   // DRV
+        case 4: return 1;   // abs over-current
+        case 5: return 6;   // over-temp FET
+        case 6: return 8;   // over-temp motor
+        default: if (gV.fault != 0) return 12;
+    }
+    if (gV.temp_fet >= 85) return 6;  if (gV.temp_fet >= 72) return 5;
+    if (gV.temp_mot >= 90) return 8;  if (gV.temp_mot >= 78) return 7;
+    if (gV.bms && gV.temp_bat >= 55) return 9;
+    if (gProfile.batt_cells > 0) {
+        float vc = packVoltage() / gProfile.batt_cells;
+        if (vc > 2.5f && vc < 3.00f) return 11;
+        if (vc > 2.5f && vc < 3.25f) return 10;
+    }
+    return 0;
 }
 static void espnowSend() {
     if (!gEspNowOk) return;   // send even without VESC (so GPS sats show pre-ride; VESC fields 0)
@@ -2688,6 +2710,7 @@ static void espnowSend() {
     p.speed_x10  = (int16_t)(gV.speed_kmh * 10);
     p.duty_x10   = (int16_t)(gV.duty_pct * 10);
     p.pack_v_x10 = (uint16_t)constrain((int)(packVoltage() * 10), 0, 65535);
+    p.alert      = gV.valid ? computeAlert() : 0;
     p.seq        = gEspSeq++;
     esp_now_send(HUD_BCAST, (uint8_t*)&p, sizeof(p));
 }
