@@ -13,7 +13,7 @@
 // ============================================================================
 #include <M5Unified.h>
 #include <M5GFX.h>
-#include <lgfx/v1/panel/Panel_GC9A01.hpp>   // exposes lgfx::Panel_GC9107 (not public via M5GFX.h)
+#include <lgfx/v1/panel/Panel_ST7735.hpp>   // lgfx::Panel_ST7735S (AtomS3R panel; not public via M5GFX.h)
 #include <WiFi.h>
 #include <esp_now.h>
 #include <Adafruit_NeoPixel.h>
@@ -37,18 +37,19 @@ typedef struct __attribute__((packed)) {
 
 // ---- hand-built AtomS3R LCD (GC9107 on SPI3); backlight done separately ----
 class LGFX_AtomS3R : public lgfx::LGFX_Device {
-  lgfx::Panel_GC9107 _gc;
-  lgfx::Bus_SPI      _spibus;
+  lgfx::Panel_ST7735S _lcd;
+  lgfx::Bus_SPI       _spibus;
 public:
   LGFX_AtomS3R(){
     { auto c = _spibus.config(); c.spi_host=SPI3_HOST; c.spi_mode=0;
       c.freq_write=40000000; c.freq_read=16000000; c.spi_3wire=true;
       c.pin_sclk=15; c.pin_mosi=21; c.pin_miso=-1; c.pin_dc=42;
-      _spibus.config(c); _gc.setBus(&_spibus); }
-    { auto c = _gc.config(); c.pin_cs=14; c.pin_rst=48;
-      c.panel_width=128; c.panel_height=128; c.offset_y=32;
-      c.readable=false; c.bus_shared=false; c.invert=true; _gc.config(c); }
-    setPanel(&_gc);
+      _spibus.config(c); _lcd.setBus(&_spibus); }
+    { auto c = _lcd.config(); c.pin_cs=14; c.pin_rst=48;       // AtomS3R ST7735S params (from M5GFX)
+      c.panel_width=128; c.panel_height=128;
+      c.offset_x=2; c.offset_y=31; c.offset_rotation=2;
+      c.readable=true; c.bus_shared=false; c.invert=true; _lcd.config(c); }
+    setPanel(&_lcd);
   }
 };
 static LGFX_AtomS3R lcd;
@@ -98,10 +99,13 @@ static void onRecv(const esp_now_recv_info_t*, const uint8_t* data, int len){
   }
 }
 
-// screen pages cycled by the AtomS3R button
+// screen pages: short-click cycles; long-press cycles brightness (6 levels)
 enum { PG_SPEED, PG_BATT, PG_TEMP, PG_DUTY, PG_GPS, PG_COUNT };
 static int gPage = PG_SPEED;
 static long gLastKey = -1;
+static const uint8_t PX_LEVELS[6]  = {  3, 10, 25, 55, 110, 200 };   // LED panel
+static const uint8_t LCD_LEVELS[6] = { 20, 50, 90,140, 200, 255 };   // screen backlight
+static int gBrightIdx = 2;
 
 static void drawScreen(bool link, const hud_pkt_t& p){
   const char* lab; int val;
@@ -137,7 +141,7 @@ void setup(){
   auto cfg = M5.config();
   M5.begin(cfg);                               // board power + internal I2C
   lcd.init(); lcd.setRotation(SCREEN_ROT);      // USB-C on the right
-  lcdBacklight(180);
+  lcdBacklight(LCD_LEVELS[gBrightIdx]);
   // boot splash: VHUD name
   lcd.fillScreen(TFT_BLACK);
   lcd.setTextDatum(middle_center); lcd.setTextColor(TFT_WHITE);
@@ -156,13 +160,17 @@ void setup(){
 
 void loop(){
   M5.update();
-  if (M5.BtnA.wasPressed()){ gPage = (gPage+1) % PG_COUNT; gLastKey = -1; }  // cycle HUD value
+  if (M5.BtnA.wasHold()){                       // long-press: cycle brightness (LEDs + screen)
+    gBrightIdx = (gBrightIdx+1) % 6; lcdBacklight(LCD_LEVELS[gBrightIdx]);
+  } else if (M5.BtnA.wasClicked()){             // short click: cycle HUD value
+    gPage = (gPage+1) % PG_COUNT; gLastKey = -1;
+  }
   uint32_t now = millis();
   bool link = (now - gLastRx) < 1000;
   hud_pkt_t p; memcpy(&p, (const void*)&gPkt, sizeof(p));
 
   // ---- LED panel: 4 vertical bars ----
-  px.setBrightness(link && p.bright ? p.bright : 20);
+  px.setBrightness(PX_LEVELS[gBrightIdx]);      // local brightness (long-press cycles)
   px.clear();
   if (link){
     float spd = p.speed_x10/10.0f, duty = p.duty_x10/10.0f;

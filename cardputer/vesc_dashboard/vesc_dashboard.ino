@@ -2664,7 +2664,7 @@ static void espnowInit() {
     Serial.println("[ESP-NOW] HUD broadcast ready");
 }
 static void espnowSend() {
-    if (!gEspNowOk || !gV.valid) return;
+    if (!gEspNowOk) return;   // send even without VESC (so GPS sats show pre-ride; VESC fields 0)
     hud_pkt_t p;
     p.magic = 0xBE; p.ver = 1; p.board_id = 1;
     uint8_t fl = 0;
