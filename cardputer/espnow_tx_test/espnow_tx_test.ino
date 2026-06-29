@@ -16,9 +16,13 @@
 typedef struct __attribute__((packed)) {
   uint8_t  magic, ver, board_id, flags;
   uint8_t  batt_pct, duty_limit, motor_temp;   // motor_temp in deg C
+  uint8_t  bright;                             // LED panel brightness (set by 'd')
   int16_t  speed_x10, duty_x10;
   uint8_t  seq;
 } hud_pkt_t;
+
+static const uint8_t BRIGHT_LEVELS[5] = {8, 20, 45, 90, 160};
+static int gBrightIdx = 1;
 
 static uint8_t BCAST[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
 static uint8_t gSeq = 0;
@@ -43,6 +47,11 @@ void setup(){
 
 void loop(){
   M5Cardputer.update();
+  // 'd' cycles LED panel brightness (sent to the helmet in the packet)
+  if (M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed()){
+    for (auto c : M5Cardputer.Keyboard.keysState().word)
+      if (c=='d' || c=='D') gBrightIdx = (gBrightIdx+1) % 5;
+  }
   uint32_t now = millis();
   if (now - gLastTx >= 50){            // 20 Hz
     gLastTx = now;
@@ -51,11 +60,12 @@ void loop(){
     p.magic = PKT_MAGIC; p.ver = 1; p.board_id = 1;
     p.batt_pct  = 50 + (int)(40*sinf(t*0.2f));            // 10..90 sweep
     p.duty_limit = 80;
-    float spd = 15 + 12*sinf(t*0.5f);                     // 3..27 km/h sweep
-    float duty = 40 + 45*sinf(t*0.7f);                    // -5..85 sweep
+    float spd  = 22 + 23*sinf(t*0.5f);                    // -1..45 km/h sweep (reaches red)
+    float duty = 47 + 48*sinf(t*0.7f);                    // -1..95 sweep (reaches cutoff)
     p.speed_x10 = (int16_t)(fmaxf(0,spd)*10);
     p.duty_x10  = (int16_t)(fmaxf(0,duty)*10);
     p.motor_temp = (uint8_t)(45 + 35*sinf(t*0.3f));       // 10..80 C sweep
+    p.bright = BRIGHT_LEVELS[gBrightIdx];
     p.flags = ((int)t % 6 < 2) ? 0x01 : 0x00;             // "braking" 2s every 6s
     p.seq = gSeq++;
     esp_now_send(BCAST, (uint8_t*)&p, sizeof(p));
@@ -67,6 +77,8 @@ void loop(){
     char b[48];
     snprintf(b,sizeof(b),"seq %u  spd %.0f  duty %.0f", gSeq, spd, duty); cv.drawString(b,6,40);
     snprintf(b,sizeof(b),"batt %d%%  brake %d", p.batt_pct, p.flags&1);   cv.drawString(b,6,56);
+    cv.setTextColor(TFT_YELLOW);
+    snprintf(b,sizeof(b),"[d] bright = %d", p.bright);                    cv.drawString(b,6,72);
     cv.setTextColor(TFT_DARKGREY); cv.drawString("broadcasting to helmet HUD", 6, 116);
     cv.pushSprite(0,0);
   }

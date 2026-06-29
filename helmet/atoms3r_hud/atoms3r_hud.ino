@@ -24,6 +24,7 @@ Adafruit_NeoPixel px(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
 typedef struct __attribute__((packed)) {
   uint8_t  magic, ver, board_id, flags;     // flags bit0=braking, bit1=footpad on
   uint8_t  batt_pct, duty_limit, motor_temp; // motor_temp deg C
+  uint8_t  bright;                           // LED panel brightness
   int16_t  speed_x10, duty_x10;
   uint8_t  seq;
 } hud_pkt_t;
@@ -80,6 +81,7 @@ void loop(){
   hud_pkt_t p; memcpy(&p, (const void*)&gPkt, sizeof(p));
 
   // ---- LED panel: 4 vertical bars (speed / duty / batt / motor temp) ----
+  px.setBrightness(link && p.bright ? p.bright : 20);   // brightness from packet ('d' on the keyboard)
   px.clear();
   if (link){
     float spd = p.speed_x10/10.0f, duty = p.duty_x10/10.0f;
