@@ -46,7 +46,7 @@ public:
       _spibus.config(c); _gc.setBus(&_spibus); }
     { auto c = _gc.config(); c.pin_cs=14; c.pin_rst=48;
       c.panel_width=128; c.panel_height=128; c.offset_y=32;
-      c.readable=false; c.bus_shared=false; _gc.config(c); }
+      c.readable=false; c.bus_shared=false; c.invert=true; _gc.config(c); }
     setPanel(&_gc);
   }
 };
