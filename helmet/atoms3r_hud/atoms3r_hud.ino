@@ -29,7 +29,7 @@
 // ESP-NOW packet (defined up here so Arduino's auto-prototypes see the type)
 typedef struct __attribute__((packed)) {
   uint8_t  magic, ver, board_id, flags;      // flags bit0=braking (reserved: rear light)
-  uint8_t  batt_pct, duty_limit, motor_temp, batt_temp, gps_sats, cells, bright;
+  uint8_t  batt_pct, duty_limit, motor_temp, batt_temp, fet_temp, gps_sats, cells, bright;
   int16_t  speed_x10, duty_x10;
   uint16_t pack_v_x10;
   uint8_t  seq;
@@ -100,7 +100,7 @@ static void onRecv(const esp_now_recv_info_t*, const uint8_t* data, int len){
 }
 
 // screen pages: short-click cycles; long-press cycles brightness (6 levels)
-enum { PG_SPEED, PG_BATT, PG_BATTV, PG_CELLV, PG_TEMP, PG_BTEMP, PG_DUTY, PG_GPS, PG_COUNT };
+enum { PG_SPEED, PG_BATT, PG_BATTV, PG_CELLV, PG_TEMP, PG_BTEMP, PG_FTEMP, PG_DUTY, PG_GPS, PG_COUNT };
 static int gPage = PG_SPEED;
 static const uint8_t PX_LEVELS[6]  = {  3, 10, 25, 55, 110, 200 };   // LED panel
 static const uint8_t LCD_LEVELS[6] = { 20, 50, 90,140, 200, 255 };   // screen backlight
@@ -116,6 +116,7 @@ static void drawScreen(bool link, const hud_pkt_t& p){
     case PG_CELLV: lab="CELL V";    snprintf(v,sizeof(v),"%.2f", p.cells? packv/p.cells : 0.f); break;
     case PG_TEMP:  lab="MOTOR \xB0""C"; snprintf(v,sizeof(v),"%d", p.motor_temp); break;
     case PG_BTEMP: lab="BATT \xB0""C";  snprintf(v,sizeof(v),"%d", p.batt_temp); break;
+    case PG_FTEMP: lab="CTRL \xB0""C";  snprintf(v,sizeof(v),"%d", p.fet_temp); break;
     case PG_DUTY:  lab="DUTY %";    snprintf(v,sizeof(v),"%d", (int)roundf(duty)); break;
     case PG_GPS:   lab="GPS sat";   snprintf(v,sizeof(v),"%d", p.gps_sats); break;
     default:       lab="SPEED km/h"; snprintf(v,sizeof(v),"%d", (int)roundf(spd));
@@ -177,7 +178,8 @@ void loop(){
     float k = constrain((spd-25.0f)/15.0f, 0.f, 1.f);
     vbarC(0,1, spd/45.0f, px.Color((int)(k*255),(int)((1-k)*150),(int)((1-k)*255)));     // speed blue->red
     uint32_t dc = duty<70 ? px.Color(255,170,0) : duty<80 ? px.Color(255,90,0) : px.Color(255,0,0);
-    vbarC(3,4, duty/95.0f, dc);                                                          // duty
+    bool dutyBlink = (duty >= 90.0f) && ((now/150)&1);    // ≥90% → bar blinks (critical)
+    vbarC(3,4, dutyBlink ? 0.0f : duty/95.0f, dc);                                       // duty
     uint32_t bc = p.batt_pct<25 ? px.Color(255,0,0) : p.batt_pct<50 ? px.Color(255,150,0) : px.Color(0,200,0);
     vbarC(6,6, p.batt_pct/100.0f, bc);                                                   // battery 1px
     int mt = p.motor_temp;
