@@ -2644,7 +2644,7 @@ static void drawWifi() {
 // ─────────────────────────────────────────────────────────────────────────────
 typedef struct __attribute__((packed)) {
     uint8_t magic, ver, board_id, flags;       // flags bit0=braking, bit1=footpad on
-    uint8_t batt_pct, duty_limit, motor_temp, bright;
+    uint8_t batt_pct, duty_limit, motor_temp, bright, gps_sats;
     int16_t speed_x10, duty_x10;
     uint8_t seq;
 } hud_pkt_t;
@@ -2680,6 +2680,7 @@ static void espnowSend() {
     p.duty_limit = (uint8_t)(gProfile.tiltback_duty > 0 ? gProfile.tiltback_duty : 80);
     p.motor_temp = (uint8_t)constrain((int)gV.temp_mot, 0, 200);
     p.bright     = 40;
+    p.gps_sats   = (uint8_t)constrain(gGps.sats, 0, 99);
     p.speed_x10  = (int16_t)(gV.speed_kmh * 10);
     p.duty_x10   = (int16_t)(gV.duty_pct * 10);
     p.seq        = gEspSeq++;

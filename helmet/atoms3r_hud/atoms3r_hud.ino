@@ -30,7 +30,7 @@
 typedef struct __attribute__((packed)) {
   uint8_t  magic, ver, board_id, flags;      // flags bit0=braking (reserved: rear light)
   uint8_t  batt_pct, duty_limit, motor_temp;
-  uint8_t  bright;
+  uint8_t  bright, gps_sats;
   int16_t  speed_x10, duty_x10;
   uint8_t  seq;
 } hud_pkt_t;
@@ -99,7 +99,7 @@ static void onRecv(const esp_now_recv_info_t*, const uint8_t* data, int len){
 }
 
 // screen pages cycled by the AtomS3R button
-enum { PG_SPEED, PG_BATT, PG_TEMP, PG_DUTY, PG_COUNT };
+enum { PG_SPEED, PG_BATT, PG_TEMP, PG_DUTY, PG_GPS, PG_COUNT };
 static int gPage = PG_SPEED;
 static long gLastKey = -1;
 
@@ -110,6 +110,7 @@ static void drawScreen(bool link, const hud_pkt_t& p){
     case PG_BATT: lab="BATTERY %"; val=p.batt_pct; break;
     case PG_TEMP: lab="MOTOR \xB0""C"; val=p.motor_temp; break;
     case PG_DUTY: lab="DUTY %";    val=(int)roundf(duty); break;
+    case PG_GPS:  lab="GPS sat";   val=p.gps_sats; break;
     default:      lab="SPEED km/h"; val=(int)roundf(spd);
   }
   long key = (long)gPage*100000 + (link?1:0)*10000 + (link?val:-1);
