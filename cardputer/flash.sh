@@ -19,7 +19,8 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export PATH="$PATH:$ROOT/bin"
-FQBN="m5stack:esp32:m5stack_cardputer:PartitionScheme=default_8MB"
+# FQBN override via env, e.g.:  FQBN=m5stack:esp32:m5stack_atoms3r cardputer/flash.sh helmet/atoms3r_hud
+FQBN="${FQBN:-m5stack:esp32:m5stack_cardputer:PartitionScheme=default_8MB}"
 LIBS="$HOME/Documents/Arduino/libraries"
 # $1 = sketch dir (default: the dashboard). e.g. cardputer/flash.sh cardputer/ble_relay
 SKETCH="${1:-$ROOT/cardputer/vesc_dashboard}"
