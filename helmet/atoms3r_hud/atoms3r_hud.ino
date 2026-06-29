@@ -58,6 +58,8 @@ static void onRecv(const esp_now_recv_info_t*, const uint8_t* data, int len){
 void setup(){
   auto cfg = M5.config();
   M5.begin(cfg);
+  Serial.begin(115200); delay(300);
+  Serial.printf("[HUD] board=%d  disp=%dx%d\n", (int)M5.getBoard(), (int)M5.Display.width(), (int)M5.Display.height());
   M5.Display.setBrightness(255);              // backlight max
   M5.Display.setRotation(0);
   M5.Display.setTextDatum(middle_center);
@@ -80,9 +82,18 @@ void loop(){
   bool link = (now - gLastRx) < 1000;
   hud_pkt_t p; memcpy(&p, (const void*)&gPkt, sizeof(p));
 
+  bool braking = link && (p.flags & 0x01);
+
   // ---- LED panel: 4 vertical bars (speed / duty / batt / motor temp) ----
   px.setBrightness(link && p.bright ? p.bright : 20);   // brightness from packet ('d' on the keyboard)
   px.clear();
+  if (braking && ((now/120)&1)){
+    // brake warning: whole panel flashes RED (~4Hz) — far more visible than the tiny screen
+    for (int i=0;i<NUM_LEDS;i++) px.setPixelColor(i, px.Color(255,0,0));
+    px.show();
+    delay(8);
+    return;
+  }
   if (link){
     float spd = p.speed_x10/10.0f, duty = p.duty_x10/10.0f;
     // SPEED cols 0-1, scale 0..45, colour blue->red across 25..40 km/h
@@ -104,8 +115,7 @@ void loop(){
   }
   px.show();
 
-  // ---- AtomS3R screen ----
-  bool braking = link && (p.flags & 0x01);
+  // ---- AtomS3R screen (dead until the panel-autodetect issue is fixed; harmless) ----
   int W=M5.Display.width(), H=M5.Display.height();
   if (braking){
     bool on = (now/120)&1;                                 // ~4Hz flash
