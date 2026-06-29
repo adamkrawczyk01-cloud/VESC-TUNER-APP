@@ -23,6 +23,16 @@
 #define PANEL_TOP    0
 #define PANEL_BOTTOM 1
 #define PKT_MAGIC    0xBE
+#define SCREEN_ROT   1     // USB-C on the RIGHT (was 0 = top). Flip to 3 if upside-down.
+
+// ESP-NOW packet (defined up here so Arduino's auto-prototypes see the type)
+typedef struct __attribute__((packed)) {
+  uint8_t  magic, ver, board_id, flags;      // flags bit0=braking (reserved: rear light)
+  uint8_t  batt_pct, duty_limit, motor_temp;
+  uint8_t  bright;
+  int16_t  speed_x10, duty_x10;
+  uint8_t  seq;
+} hud_pkt_t;
 
 // ---- hand-built AtomS3R LCD (GC9107 on SPI3); backlight done separately ----
 class LGFX_AtomS3R : public lgfx::LGFX_Device {
@@ -51,14 +61,6 @@ static void lcdBacklight(uint8_t b){
 
 Adafruit_NeoPixel px(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
 
-typedef struct __attribute__((packed)) {
-  uint8_t  magic, ver, board_id, flags;      // flags bit0=braking (reserved: rear light)
-  uint8_t  batt_pct, duty_limit, motor_temp;
-  uint8_t  bright;
-  int16_t  speed_x10, duty_x10;
-  uint8_t  seq;
-} hud_pkt_t;
-
 static volatile hud_pkt_t gPkt;
 static volatile uint32_t  gLastRx = 0, gRxCount = 0;
 
@@ -81,25 +83,45 @@ static void onRecv(const esp_now_recv_info_t*, const uint8_t* data, int len){
   }
 }
 
-static int gShownSpeed = -999;
-static void drawSpeed(bool link, int spd){
-  if (spd == gShownSpeed) return;              // only redraw on change (no flicker)
-  gShownSpeed = spd;
+// screen pages cycled by the AtomS3R button
+enum { PG_SPEED, PG_BATT, PG_TEMP, PG_DUTY, PG_COUNT };
+static int gPage = PG_SPEED;
+static long gLastKey = -1;
+
+static void drawScreen(bool link, const hud_pkt_t& p){
+  const char* lab; const char* unit; int val; uint16_t col;
+  float spd = p.speed_x10/10.0f, duty = p.duty_x10/10.0f;
+  switch (gPage){
+    case PG_BATT: lab="BATT"; unit="%"; val=p.batt_pct;
+      col = p.batt_pct<25?TFT_RED:p.batt_pct<50?TFT_ORANGE:TFT_GREEN; break;
+    case PG_TEMP: lab="MOTOR"; unit="\xB0""C"; val=p.motor_temp;
+      col = p.motor_temp<55?TFT_GREEN:p.motor_temp<70?TFT_YELLOW:p.motor_temp<82?TFT_ORANGE:TFT_RED; break;
+    case PG_DUTY: lab="DUTY"; unit="%"; val=(int)roundf(duty);
+      col = duty<70?TFT_YELLOW:duty<80?TFT_ORANGE:TFT_RED; break;
+    default: { lab="SPEED"; unit="km/h"; val=(int)roundf(spd);
+      float k=constrain((spd-25.f)/15.f,0.f,1.f);
+      col = lcd.color565((int)(k*255),(int)((1-k)*180),(int)((1-k)*255)); }
+  }
+  long key = (long)gPage*100000 + (link?1:0)*10000 + (link?val:-1);
+  if (key == gLastKey) return;                 // redraw only on change
+  gLastKey = key;
   lcd.fillScreen(TFT_BLACK);
+  lcd.setTextDatum(top_center);
+  lcd.setFont(&fonts::Font0); lcd.setTextSize(2); lcd.setTextColor(TFT_DARKGREY);
+  lcd.drawString(link?lab:"NO LINK", lcd.width()/2, 4);
   lcd.setTextDatum(middle_center);
-  lcd.setTextColor(link ? TFT_WHITE : TFT_DARKGREY);
-  lcd.setFont(&fonts::Font7);                  // 7-segment style
-  lcd.setTextSize(1);
-  char b[8]; snprintf(b,sizeof(b), link?"%d":"--", spd);
-  lcd.drawString(b, lcd.width()/2, lcd.height()/2 - 6);
+  lcd.setFont(&fonts::Font7); lcd.setTextSize(1); lcd.setTextColor(link?col:TFT_DARKGREY);
+  char b[8]; snprintf(b,sizeof(b), link?"%d":"--", val);
+  lcd.drawString(b, lcd.width()/2, lcd.height()/2 + 4);
+  lcd.setTextDatum(bottom_center);
   lcd.setFont(&fonts::Font0); lcd.setTextSize(1); lcd.setTextColor(TFT_DARKGREY);
-  lcd.drawString(link?"km/h":"NO LINK", lcd.width()/2, lcd.height()-10);
+  lcd.drawString(unit, lcd.width()/2, lcd.height()-4);
 }
 
 void setup(){
   auto cfg = M5.config();
   M5.begin(cfg);                               // board power + internal I2C
-  lcd.init(); lcd.setRotation(0);
+  lcd.init(); lcd.setRotation(SCREEN_ROT);      // USB-C on the right
   lcdBacklight(180);
   lcd.fillScreen(TFT_BLUE);                     // boot splash (proves LCD works)
   lcd.setTextDatum(middle_center); lcd.setTextColor(TFT_WHITE); lcd.setTextSize(2);
@@ -114,6 +136,7 @@ void setup(){
 
 void loop(){
   M5.update();
+  if (M5.BtnA.wasPressed()){ gPage = (gPage+1) % PG_COUNT; gLastKey = -1; }  // cycle HUD value
   uint32_t now = millis();
   bool link = (now - gLastRx) < 1000;
   hud_pkt_t p; memcpy(&p, (const void*)&gPkt, sizeof(p));
@@ -137,8 +160,8 @@ void loop(){
   }
   px.show();
 
-  // ---- AtomS3R screen: big SPEED number ----
-  drawSpeed(link, (int)roundf(p.speed_x10/10.0f));
+  // ---- AtomS3R screen: selected metric (button cycles speed/batt/temp/duty) ----
+  drawScreen(link, p);
 
   delay(8);
 }
