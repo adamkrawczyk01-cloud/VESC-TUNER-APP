@@ -15,7 +15,7 @@
 #define PKT_MAGIC 0xBE
 typedef struct __attribute__((packed)) {
   uint8_t  magic, ver, board_id, flags;
-  uint8_t  batt_pct, duty_limit;
+  uint8_t  batt_pct, duty_limit, motor_temp;   // motor_temp in deg C
   int16_t  speed_x10, duty_x10;
   uint8_t  seq;
 } hud_pkt_t;
@@ -55,6 +55,7 @@ void loop(){
     float duty = 40 + 45*sinf(t*0.7f);                    // -5..85 sweep
     p.speed_x10 = (int16_t)(fmaxf(0,spd)*10);
     p.duty_x10  = (int16_t)(fmaxf(0,duty)*10);
+    p.motor_temp = (uint8_t)(45 + 35*sinf(t*0.3f));       // 10..80 C sweep
     p.flags = ((int)t % 6 < 2) ? 0x01 : 0x00;             // "braking" 2s every 6s
     p.seq = gSeq++;
     esp_now_send(BCAST, (uint8_t*)&p, sizeof(p));
