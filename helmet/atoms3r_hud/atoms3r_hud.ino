@@ -23,7 +23,7 @@
 #define PANEL_TOP    0
 #define PANEL_BOTTOM 1
 #define PKT_MAGIC    0xBE
-#define SCREEN_ROT   1     // USB-C on the RIGHT (was 0 = top). Flip to 3 if upside-down.
+#define SCREEN_ROT   3     // USB-C on the right, content upright
 
 // ESP-NOW packet (defined up here so Arduino's auto-prototypes see the type)
 typedef struct __attribute__((packed)) {
@@ -89,33 +89,29 @@ static int gPage = PG_SPEED;
 static long gLastKey = -1;
 
 static void drawScreen(bool link, const hud_pkt_t& p){
-  const char* lab; const char* unit; int val; uint16_t col;
+  const char* lab; int val;
   float spd = p.speed_x10/10.0f, duty = p.duty_x10/10.0f;
   switch (gPage){
-    case PG_BATT: lab="BATT"; unit="%"; val=p.batt_pct;
-      col = p.batt_pct<25?TFT_RED:p.batt_pct<50?TFT_ORANGE:TFT_GREEN; break;
-    case PG_TEMP: lab="MOTOR"; unit="\xB0""C"; val=p.motor_temp;
-      col = p.motor_temp<55?TFT_GREEN:p.motor_temp<70?TFT_YELLOW:p.motor_temp<82?TFT_ORANGE:TFT_RED; break;
-    case PG_DUTY: lab="DUTY"; unit="%"; val=(int)roundf(duty);
-      col = duty<70?TFT_YELLOW:duty<80?TFT_ORANGE:TFT_RED; break;
-    default: { lab="SPEED"; unit="km/h"; val=(int)roundf(spd);
-      float k=constrain((spd-25.f)/15.f,0.f,1.f);
-      col = lcd.color565((int)(k*255),(int)((1-k)*180),(int)((1-k)*255)); }
+    case PG_BATT: lab="BATTERY %"; val=p.batt_pct; break;
+    case PG_TEMP: lab="MOTOR \xB0""C"; val=p.motor_temp; break;
+    case PG_DUTY: lab="DUTY %";    val=(int)roundf(duty); break;
+    default:      lab="SPEED km/h"; val=(int)roundf(spd);
   }
   long key = (long)gPage*100000 + (link?1:0)*10000 + (link?val:-1);
   if (key == gLastKey) return;                 // redraw only on change
   gLastKey = key;
+
+  const int W = lcd.width(), H = lcd.height(), BAR = 30;
   lcd.fillScreen(TFT_BLACK);
-  lcd.setTextDatum(top_center);
-  lcd.setFont(&fonts::Font0); lcd.setTextSize(2); lcd.setTextColor(TFT_DARKGREY);
-  lcd.drawString(link?lab:"NO LINK", lcd.width()/2, 4);
+  // full-width top label bar
+  lcd.fillRect(0, 0, W, BAR, lcd.color565(45,45,52));
   lcd.setTextDatum(middle_center);
-  lcd.setFont(&fonts::Font7); lcd.setTextSize(1); lcd.setTextColor(link?col:TFT_DARKGREY);
+  lcd.setFont(&fonts::Font0); lcd.setTextSize(2); lcd.setTextColor(TFT_WHITE);
+  lcd.drawString(link?lab:"NO LINK", W/2, BAR/2);
+  // big white number, centered in the area below the bar
+  lcd.setFont(&fonts::Font7); lcd.setTextSize(1); lcd.setTextColor(TFT_WHITE);
   char b[8]; snprintf(b,sizeof(b), link?"%d":"--", val);
-  lcd.drawString(b, lcd.width()/2, lcd.height()/2 + 4);
-  lcd.setTextDatum(bottom_center);
-  lcd.setFont(&fonts::Font0); lcd.setTextSize(1); lcd.setTextColor(TFT_DARKGREY);
-  lcd.drawString(unit, lcd.width()/2, lcd.height()-4);
+  lcd.drawString(b, W/2, BAR + (H-BAR)/2);
 }
 
 void setup(){
