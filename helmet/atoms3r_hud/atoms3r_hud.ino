@@ -123,6 +123,9 @@ static void bootAnim(){
   }
   for (int i=0;i<NUM_LEDS;i++) px.setPixelColor(i, px.Color(150,150,150));
   px.show(); delay(140);
+  // icon self-test (verify orientation): bolt · °C · battery · warning
+  const char* const* tst[4] = { IC_BOLT, IC_TEMP, IC_BATT, IC_WARN };
+  for (int i=0;i<4;i++){ px.clear(); drawIcon(tst[i], px.Color(170,170,170)); px.show(); delay(450); }
   px.clear(); px.show();
 }
 static void onRecv(const esp_now_recv_info_t*, const uint8_t* data, int len){
