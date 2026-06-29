@@ -101,16 +101,19 @@ static void drawScreen(bool link, const hud_pkt_t& p){
   if (key == gLastKey) return;                 // redraw only on change
   gLastKey = key;
 
-  const int W = lcd.width(), H = lcd.height(), BAR = 30;
-  lcd.fillScreen(TFT_BLACK);
-  // full-width top label bar
-  lcd.fillRect(0, 0, W, BAR, lcd.color565(45,45,52));
+  const int W = lcd.width(), H = lcd.height(), BAR = 28;
+  lcd.fillScreen(TFT_BLACK);                          // black background
+  // top label "belka": white text + white divider line
   lcd.setTextDatum(middle_center);
   lcd.setFont(&fonts::Font0); lcd.setTextSize(2); lcd.setTextColor(TFT_WHITE);
-  lcd.drawString(link?lab:"NO LINK", W/2, BAR/2);
-  // big white number, centered in the area below the bar
-  lcd.setFont(&fonts::Font7); lcd.setTextSize(1); lcd.setTextColor(TFT_WHITE);
+  lcd.drawString(link?lab:"NO LINK", W/2, BAR/2 - 1);
+  lcd.drawFastHLine(0, BAR-1, W, TFT_WHITE);
+  // big WHITE number, auto-sized to fill the whole area below the bar
   char b[8]; snprintf(b,sizeof(b), link?"%d":"--", val);
+  lcd.setFont(&fonts::Font7); lcd.setTextColor(TFT_WHITE);
+  int s = 8;
+  for (; s > 1; s--){ lcd.setTextSize(s); if (lcd.textWidth(b) <= W-6 && lcd.fontHeight() <= H-BAR-6) break; }
+  lcd.setTextSize(s); lcd.setTextDatum(middle_center);
   lcd.drawString(b, W/2, BAR + (H-BAR)/2);
 }
 
