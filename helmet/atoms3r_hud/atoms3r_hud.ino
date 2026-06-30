@@ -57,7 +57,7 @@ static const AlertDef ALERTS[] = {
   {0,true,"BATT HOT"}, {2,false,"LOW BATT"}, {2,true,"BATT CRIT"}, {3,true,"FAULT"} };
 static const int ALERT_N = sizeof(ALERTS)/sizeof(ALERTS[0]);
 #define ICON_FLIP_X 0
-#define ICON_FLIP_Y 0
+#define ICON_FLIP_Y 1     // un-mirror glyphs (landscape mapping transposes = mirror)
 
 // ---- hand-built AtomS3R LCD (GC9107 on SPI3); backlight done separately ----
 class LGFX_AtomS3R : public lgfx::LGFX_Device {
