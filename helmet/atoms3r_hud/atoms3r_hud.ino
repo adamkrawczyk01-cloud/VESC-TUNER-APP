@@ -90,7 +90,11 @@ Adafruit_NeoPixel px(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
 static volatile hud_pkt_t gPkt;
 static volatile uint32_t  gLastRx = 0, gRxCount = 0;
 
+#define LED_FLIP180  1     // panel mounted rotated 180° (flips bars + icons together)
 static uint16_t xy(int x, int y){              // x:0..7  y:0..15 (0=top)
+#if LED_FLIP180
+  x = 7 - x; y = 15 - y;
+#endif
   int panel = (y < 8) ? PANEL_TOP : PANEL_BOTTOM;
   int ry    = (y < 8) ? y : (y - 8);
   return panel*64 + ry*8 + x;
