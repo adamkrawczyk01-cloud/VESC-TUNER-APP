@@ -90,11 +90,11 @@ Adafruit_NeoPixel px(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
 static volatile hud_pkt_t gPkt;
 static volatile uint32_t  gLastRx = 0, gRxCount = 0;
 
-#define LED_FLIP180  1     // panel mounted rotated 180° (flips bars + icons together)
+static bool gFlip = false;          // physical 180° flip detected (IMU gravity)
+static bool gLedFlip = true;        // LED 180° flip (true = current base mounting)
+static int  gScreenRot = SCREEN_ROT;
 static uint16_t xy(int x, int y){              // x:0..7  y:0..15 (0=top)
-#if LED_FLIP180
-  x = 7 - x; y = 15 - y;
-#endif
+  if (gLedFlip){ x = 7 - x; y = 15 - y; }
   int panel = (y < 8) ? PANEL_TOP : PANEL_BOTTOM;
   int ry    = (y < 8) ? y : (y - 8);
   return panel*64 + ry*8 + x;
@@ -191,7 +191,8 @@ static void drawAlertScreen(const AlertDef& ad){
 void setup(){
   auto cfg = M5.config();
   M5.begin(cfg);                               // board power + internal I2C
-  lcd.init(); lcd.setRotation(SCREEN_ROT);      // USB-C on the right
+  M5.Imu.begin();                              // IMU for auto-orient (needs explicit begin here)
+  lcd.init(); lcd.setRotation(gScreenRot);      // orientation (auto-updated by IMU)
   lcdBacklight(LCD_LEVELS[gBrightIdx]);
   // boot splash: VHUD name
   lcd.fillScreen(TFT_BLACK);
@@ -211,6 +212,14 @@ void setup(){
 
 void loop(){
   M5.update();
+  // auto-orient: physical 180° flip → gravity moves from ay≈+1 to ≈-1 (filter + hysteresis)
+  { static uint32_t t=0; static float ayf=0.98f;
+    if (millis()-t > 150){ t=millis(); float ax,ay,az; M5.Imu.getAccel(&ax,&ay,&az);
+      ayf = ayf*0.85f + ay*0.15f;
+      bool nf = (ayf < -0.35f) ? true : (ayf > 0.35f) ? false : gFlip;
+      if (nf != gFlip){ gFlip=nf; gLedFlip=!gFlip; gScreenRot=gFlip?3:1;
+        lcd.setRotation(gScreenRot); gLastPg=-1; }
+    } }
   if (M5.BtnA.wasHold()){                       // long-press: cycle brightness (LEDs + screen)
     gBrightIdx = (gBrightIdx+1) % 6; lcdBacklight(LCD_LEVELS[gBrightIdx]);
   } else if (M5.BtnA.wasClicked()){             // short click: cycle HUD value
