@@ -77,6 +77,7 @@ public:
   }
 };
 static LGFX_AtomS3R lcd;
+static M5Canvas scr(&lcd);          // offscreen buffer — pushed rotated 180° when flipped
 // LP5562 backlight via M5Unified's internal I2C (addr 0x30)
 static void lcdBacklight(uint8_t b){
   M5.In_I2C.writeRegister8(0x30, 0x00, 0x40, 400000);
@@ -146,7 +147,11 @@ static const uint8_t PX_LEVELS[6]  = {  3, 10, 25, 55, 110, 200 };   // LED pane
 static const uint8_t LCD_LEVELS[6] = { 20, 50, 90,140, 200, 255 };   // screen backlight
 static int gBrightIdx = 2;
 
-static char gLastStr[12] = ""; static int gLastPg = -1; static bool gLastLink = false;
+static char gLastStr[12] = ""; static int gLastPg = -1; static bool gLastLink = false; static bool gLastPushFlip = false;
+static void pushScreen(){                         // blit buffer to LCD, rotated 180° when flipped
+  if (gFlip) scr.pushRotated(180);
+  else       scr.pushSprite(0, 0);
+}
 static void drawScreen(bool link, const hud_pkt_t& p){
   const char* lab; char v[12];
   float spd = p.speed_x10/10.0f, duty = p.duty_x10/10.0f, packv = p.pack_v_x10/10.0f;
@@ -162,37 +167,43 @@ static void drawScreen(bool link, const hud_pkt_t& p){
     default:       lab="SPEED km/h"; snprintf(v,sizeof(v),"%d", (int)roundf(spd));
   }
   if (!link) strcpy(v, "--");
-  if (gPage==gLastPg && link==gLastLink && strcmp(v,gLastStr)==0) return;   // redraw on change only
+  if (gPage==gLastPg && link==gLastLink && strcmp(v,gLastStr)==0){
+    if (gFlip != gLastPushFlip){ pushScreen(); gLastPushFlip=gFlip; } return; }
   gLastPg=gPage; gLastLink=link; strncpy(gLastStr, v, sizeof(gLastStr)-1);
 
-  const int W = lcd.width(), H = lcd.height(), BAR = 28;
-  lcd.fillScreen(TFT_BLACK);
-  lcd.setTextDatum(middle_center);
-  lcd.setFont(&fonts::Font0); lcd.setTextSize(2); lcd.setTextColor(TFT_WHITE);
-  lcd.drawString(link?lab:"NO LINK", W/2, BAR/2 - 1);
-  lcd.drawFastHLine(0, BAR-1, W, TFT_WHITE);
-  lcd.setFont(&fonts::Font7); lcd.setTextColor(TFT_WHITE);
+  const int W = scr.width(), H = scr.height(), BAR = 28;
+  scr.fillScreen(TFT_BLACK);
+  scr.setTextDatum(middle_center);
+  scr.setFont(&fonts::Font0); scr.setTextSize(2); scr.setTextColor(TFT_WHITE);
+  scr.drawString(link?lab:"NO LINK", W/2, BAR/2 - 1);
+  scr.drawFastHLine(0, BAR-1, W, TFT_WHITE);
+  scr.setFont(&fonts::Font7); scr.setTextColor(TFT_WHITE);
   int s = 8;
-  for (; s > 1; s--){ lcd.setTextSize(s); if (lcd.textWidth(v) <= W-6 && lcd.fontHeight() <= H-BAR-6) break; }
-  lcd.setTextSize(s); lcd.setTextDatum(middle_center);
-  lcd.drawString(v, W/2, BAR + (H-BAR)/2);
+  for (; s > 1; s--){ scr.setTextSize(s); if (scr.textWidth(v) <= W-6 && scr.fontHeight() <= H-BAR-6) break; }
+  scr.setTextSize(s); scr.setTextDatum(middle_center);
+  scr.drawString(v, W/2, BAR + (H-BAR)/2);
+  pushScreen(); gLastPushFlip = gFlip;
 }
 static void drawAlertScreen(const AlertDef& ad){
-  uint16_t col = ad.red ? TFT_RED : (uint16_t)lcd.color565(255,150,0);
-  lcd.fillScreen(TFT_BLACK);
-  lcd.setTextDatum(middle_center); lcd.setTextColor(col);
-  lcd.setFont(&fonts::Font0); lcd.setTextSize(2);
-  lcd.drawString("! ALERT", lcd.width()/2, 20);
-  lcd.setTextSize(3);
-  if (lcd.textWidth(ad.name) > lcd.width()-4) lcd.setTextSize(2);
-  lcd.drawString(ad.name, lcd.width()/2, lcd.height()/2 + 10);
+  uint16_t col = ad.red ? TFT_RED : (uint16_t)scr.color565(255,150,0);
+  scr.fillScreen(TFT_BLACK);
+  scr.setTextDatum(middle_center); scr.setTextColor(col);
+  scr.setFont(&fonts::Font0); scr.setTextSize(2);
+  scr.drawString("! ALERT", scr.width()/2, 20);
+  scr.setTextSize(3);
+  if (scr.textWidth(ad.name) > scr.width()-4) scr.setTextSize(2);
+  scr.drawString(ad.name, scr.width()/2, scr.height()/2 + 10);
+  pushScreen();
 }
 
 void setup(){
   auto cfg = M5.config();
   M5.begin(cfg);                               // board power + internal I2C
   M5.Imu.begin();                              // IMU for auto-orient (needs explicit begin here)
-  lcd.init(); lcd.setRotation(gScreenRot);      // orientation (auto-updated by IMU)
+  lcd.init(); lcd.setRotation(SCREEN_ROT);      // fixed panel rotation; 180° flip via sprite
+  lcd.setPivot(lcd.width()/2.0f, lcd.height()/2.0f);
+  scr.createSprite(lcd.width(), lcd.height());
+  scr.setPivot(scr.width()/2.0f, scr.height()/2.0f);
   lcdBacklight(LCD_LEVELS[gBrightIdx]);
   // boot splash: VHUD name
   lcd.fillScreen(TFT_BLACK);
@@ -217,8 +228,7 @@ void loop(){
     if (millis()-t > 150){ t=millis(); float ax,ay,az; M5.Imu.getAccel(&ax,&ay,&az);
       ayf = ayf*0.85f + ay*0.15f;
       bool nf = (ayf < -0.35f) ? true : (ayf > 0.35f) ? false : gFlip;
-      if (nf != gFlip){ gFlip=nf; gLedFlip=!gFlip; gScreenRot=gFlip?3:1;
-        lcd.setRotation(gScreenRot); gLastPg=-1; }
+      if (nf != gFlip){ gFlip=nf; gLedFlip=!gFlip; }   // screen flip handled by sprite push
     } }
   if (M5.BtnA.wasHold()){                       // long-press: cycle brightness (LEDs + screen)
     gBrightIdx = (gBrightIdx+1) % 6; lcdBacklight(LCD_LEVELS[gBrightIdx]);
