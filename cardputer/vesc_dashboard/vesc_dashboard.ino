@@ -2251,28 +2251,28 @@ static void drawReview() {
 }
 
 // ── SCREEN 8 · APPLY ─────────────────────────────────────────────────────────
-static void drawApply() {
+// SCREEN 9 · Cardputer's own battery (this is the transmitter — handy to check)
+static void drawCardBatt() {
     canvas.fillScreen(C_BG);
-    uiStatBar("APPLY TUNE", "READ-ONLY", C_ICE, "");
-    uiTitle("APPLY TUNE", "DISABLED", C_DGREY);
-    canvas.drawRoundRect(5, 30, 110, 17, 3, C_OK);
-    canvas.setTextSize(1); canvas.setTextDatum(TL_DATUM);
-    canvas.setTextColor(C_OK); canvas.drawString("SAFETY GATE", 9, 32);
-    canvas.setTextColor(C_OK); canvas.drawString("BOARD IDLE OK", 9, 39);
-    canvas.drawRoundRect(125, 30, 110, 17, 3, C_DGREY);
-    canvas.setTextColor(C_DGREY); canvas.drawString("WRITE PATH", 129, 32);
-    canvas.drawString("READ-ONLY MODE", 129, 39);
-    int y = 53, armed = 0;
-    for (int i = 0; i < gSuggN && i < 4; i++) {
-        if (!gSugg[i].accepted) continue;
-        canvas.setTextColor(C_DGREY); canvas.setTextDatum(TL_DATUM); canvas.drawString(">", 8, y);
-        canvas.setTextColor(C_WHITE); canvas.drawString(gSugg[i].param, 18, y);
-        char vb[12]; snprintf(vb, sizeof(vb), "%.0f", gSugg[i].sug);
-        canvas.setTextColor(C_VOLT); canvas.setTextDatum(TR_DATUM); canvas.drawString(vb, DW - 8, y);
-        canvas.setTextDatum(TL_DATUM); y += 12; armed++;
-    }
-    if (armed == 0) { canvas.setTextColor(C_GREY); canvas.drawString("nothing armed (REVIEW first)", 18, 60); }
-    canvas.setTextColor(C_WARN); canvas.drawString("WRITE DISABLED - read-only build", 5, 124);
+    int  lvl = M5Cardputer.Power.getBatteryLevel();        // 0..100 (-1 unknown)
+    int  mv  = M5Cardputer.Power.getBatteryVoltage();      // mV
+    bool chg = (int)M5Cardputer.Power.isCharging() > 0;
+    uiStatBar("CARDPUTER", chg ? "CHARGING" : "ON BATTERY", chg ? C_OK : C_ICE, "");
+    uiTitle("CARDPUTER BATTERY", chg ? "CHG" : nullptr, C_OK);
+
+    uint16_t col = (lvl < 0) ? C_GREY : (lvl < 20) ? C_RED : (lvl < 50) ? C_WARN : C_OK;
+    char b[8]; if (lvl < 0) snprintf(b, sizeof(b), "--%%"); else snprintf(b, sizeof(b), "%d%%", lvl);
+    canvas.setTextDatum(MC_DATUM); canvas.setTextSize(4); canvas.setTextColor(col);
+    canvas.drawString(b, DW / 2, 62);
+
+    canvas.setTextSize(1); canvas.setTextDatum(TC_DATUM); canvas.setTextColor(C_GREY);
+    char vb[24]; snprintf(vb, sizeof(vb), "%.2f V %s", mv / 1000.0f, chg ? "· charging" : "");
+    canvas.drawString(vb, DW / 2, 92);
+
+    int bw = DW - 40, fill = (lvl < 0 ? 0 : lvl) * bw / 100;
+    canvas.drawRoundRect(20, 106, bw, 14, 3, C_DGREY);
+    if (fill > 3) canvas.fillRoundRect(20, 106, fill, 14, 3, col);
+    canvas.setTextDatum(TL_DATUM);
 }
 
 // ── SCREEN 3/4 · BACKUP / RESTORE ────────────────────────────────────────────
@@ -2408,7 +2408,7 @@ static void renderScreen() {
         case 6: drawBoard();   break;
         case 7: drawConfig();  break;
         case 8: drawReview();  break;
-        case 9: drawApply();   break;
+        case 9: drawCardBatt(); break;
         case 10: drawWifi();   break;
     }
 }
