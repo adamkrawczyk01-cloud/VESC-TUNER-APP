@@ -48,6 +48,10 @@ Miniaturize the Cardputer rig into a helmet heads-up display.
 
 ## Backlog / deferred
 
+- [ ] **OTA for the AtomS3R (helmet HUD):** add cable-free updates like the dashboard
+      has (`/update` web page). AtomS3R currently runs ESP-NOW only (WiFi STA) — needs a
+      WiFi "update mode" (STA join home network + WebServer + Update.h), entered while
+      stopped (WiFi vs ESP-NOW radio share). Then both units update without USB-C.
 - [~] **After-ride verification:** session_008 (observer_type 2→3) vs session_004 →
       chatter **−32%** (peak 89→61A). Ongoing: next is foc_sl_erpm 2000→~3000.
 - [x] **Full mcconf decode — DONE.** `decodeMcconfBin()` + `MCCONF_SCHEMA` in
