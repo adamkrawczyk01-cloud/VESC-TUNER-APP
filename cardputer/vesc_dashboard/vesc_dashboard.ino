@@ -2910,13 +2910,13 @@ void loop() {
     }
     // Poll Smart BMS values @1Hz — try both the CAN-forwarded motor controller
     // and the ESP32 bridge directly (depending on which one aggregates the BMS).
-    if (gBleOk && now - gLastBmsMs >= 1000) {
+    if (gBleOk && now - gLastBmsMs >= 300) {  // ~3Hz so cells/batt refresh (was 1Hz = looked stuck)
         gLastBmsMs = now;
         vescSend(CMD_BMS_GET_VALUES);        // CAN-forward to motor controller
         vescSendRawCmd(CMD_BMS_GET_VALUES);  // direct to ESP32 bridge
     }
-    // Poll setup values @1Hz (battery %, odometer) and raw IMU @5Hz (accel/gyro)
-    if (gBleOk && now - gLastSetupMs >= 1000) {
+    // Poll setup values ~3Hz (battery %, odometer) and raw IMU @5Hz (accel/gyro)
+    if (gBleOk && now - gLastSetupMs >= 300) {
         gLastSetupMs = now;
         vescSend(CMD_GET_VALUES_SETUP);
     }
@@ -2988,10 +2988,15 @@ void loop() {
         if (now - gLastCsvMs >= 83) { gLastCsvMs = now; csvAppend(); }
     }
 
-    // Render active screen (skip when scan menu is open)
-    if (!gInScanMenu) {
-        renderScreen();
-        canvas.pushSprite(0, 0);
+    // Render active screen — throttled to ~15Hz and skipped when asleep, so the loop
+    // stays free for fast BLE polling + ESP-NOW (a full canvas push each loop was the lag).
+    if (!gInScanMenu && !gScreenOff) {
+        static uint32_t gLastRenderMs = 0;
+        if (now - gLastRenderMs >= 66) {
+            gLastRenderMs = now;
+            renderScreen();
+            canvas.pushSprite(0, 0);
+        }
     }
 
     delay(15);
