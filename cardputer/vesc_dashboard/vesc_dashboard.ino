@@ -966,6 +966,8 @@ static bool bleConnect(const NimBLEAddress& addr) {
         drawScanMenu("FAIL: connect");
         return false;
     }
+    // request a fast connection interval (7.5–15ms) → low-latency telemetry (community trick)
+    gBleClient->updateConnParams(6, 12, 0, 400);
 
     drawScanMenu("GATT discovery...");
     if (!gBleClient->discoverAttributes()) {
