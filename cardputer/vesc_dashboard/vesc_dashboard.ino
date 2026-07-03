@@ -43,6 +43,7 @@
 #include <Preferences.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <Update.h>
 #include <esp_now.h>
 #include <ESPmDNS.h>
 #include <math.h>
@@ -294,6 +295,9 @@ static int      gBmsReplies = 0;         // total BMS responses seen (diagnostic
 static int      gSetupDbgN = 0, gImuDbgN = 0;
 static uint32_t gLastCsvMs = 0;
 static uint32_t gTripMs    = 0;
+static uint32_t gLastKeyMs = 0;          // display auto-sleep (transmitter — screen off while riding)
+static bool     gScreenOff = false;
+#define SCREEN_IDLE_MS 30000             // dim after 30 s without a keypress
 
 // ── GPS (M5Stack GPS Unit v1.1, NMEA over the Grove UART) ─────────────────────
 //  Plug the unit into the Cardputer Grove port. Grove pins = G1 (GPIO1) /
@@ -1696,13 +1700,18 @@ static void drawConfigReview() {
 static void handleKeys() {
     if (!M5Cardputer.Keyboard.isChange() ||
         !M5Cardputer.Keyboard.isPressed()) return;
+    gLastKeyMs = millis();
 
     // any key silences the full-charge chime (and is consumed for that)
     if (gChargeAlarm && !gChargeDismissed) {
         gChargeDismissed = true; gChargeAlarm = false;
         M5Cardputer.Speaker.stop();
+        if (gScreenOff) { M5Cardputer.Display.setBrightness(120); gScreenOff = false; }
         return;
     }
+
+    // screen asleep → first keypress just wakes it (consumed)
+    if (gScreenOff) { M5Cardputer.Display.setBrightness(120); gScreenOff = false; return; }
 
     auto st = M5Cardputer.Keyboard.keysState();
     for (char c : st.word) {
@@ -2575,12 +2584,33 @@ info();listing();tick();setInterval(tick,300);setInterval(listing,5000);
 
 static void handleRoot() { gWeb.send_P(200, "text/html", ROOT_HTML); }
 
+static const char UPDATE_HTML[] PROGMEM = R"H(<!DOCTYPE html><html><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1"></head>
+<body style="background:#0f172a;color:#e2e8f0;font:15px system-ui;padding:22px">
+<h2>VESC <b style=color:#06b6d4>TUNER</b> — OTA</h2>
+<form method=POST action=/update enctype=multipart/form-data>
+<input type=file name=fw accept=.bin><br><br>
+<input type=submit value="Flash firmware" style="padding:10px 16px"></form>
+<p style="color:#64748b">Upload <b>vesc_dashboard.ino.bin</b>. Device reboots after. Do it stopped — WiFi pauses the HUD link.</p>
+</body></html>)H";
+
 static void wifiRoutes() {
     gWeb.on("/",             handleRoot);
     gWeb.on("/api/sessions", handleSessions);
     gWeb.on("/sd",           handleDownload);
     gWeb.on("/api/live",     handleLive);
     gWeb.on("/api/info",     handleInfo);
+    gWeb.on("/update", HTTP_GET, []() { gWeb.send_P(200, "text/html", UPDATE_HTML); });
+    gWeb.on("/update", HTTP_POST, []() {
+        gWeb.sendHeader("Connection", "close");
+        gWeb.send(200, "text/plain", Update.hasError() ? "FAIL" : "OK — rebooting");
+        delay(400); ESP.restart();
+    }, []() {
+        HTTPUpload& up = gWeb.upload();
+        if (up.status == UPLOAD_FILE_START)      { Update.begin(UPDATE_SIZE_UNKNOWN); }
+        else if (up.status == UPLOAD_FILE_WRITE) { Update.write(up.buf, up.currentSize); }
+        else if (up.status == UPLOAD_FILE_END)   { Update.end(true); }
+    });
     gWeb.onNotFound([]() { wifiCors(); gWeb.send(404, "text/plain", "not found"); });
 }
 
@@ -2854,6 +2884,9 @@ static void checkDutyAlarm() {
 void loop() {
     M5Cardputer.update();
     handleKeys();
+    if (!gScreenOff && millis() - gLastKeyMs > SCREEN_IDLE_MS) {   // auto-sleep display
+        M5Cardputer.Display.setBrightness(0); gScreenOff = true;
+    }
     checkChargeAlarm();
     checkDutyAlarm();
 
