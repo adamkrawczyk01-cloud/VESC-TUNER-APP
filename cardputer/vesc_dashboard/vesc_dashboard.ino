@@ -2991,12 +2991,12 @@ void loop() {
 
     if (gWifiOn) gWeb.handleClient();   // serve LAN requests (download / live)
     gpsPoll();                          // drain GPS NMEA every loop
-    if (millis() - gLastEspMs >= 50) { gLastEspMs = millis(); espnowSend(); }  // HUD @20Hz
+    if (millis() - gLastEspMs >= 33) { gLastEspMs = millis(); espnowSend(); }  // HUD @30Hz
 
     uint32_t now = millis();
 
-    // Poll VESC @ 12Hz when connected
-    if (gBleOk && now - gLastValMs >= 83) {
+    // Poll VESC @ ~25Hz when connected (fast conn interval allows it → fresher HUD data)
+    if (gBleOk && now - gLastValMs >= 40) {
         gLastValMs = now;
         vescSend(CMD_GET_VALUES);
     }
