@@ -148,6 +148,7 @@ static const uint8_t LCD_LEVELS[6] = { 20, 50, 90,140, 200, 255 };   // screen b
 static int gBrightIdx = 2;
 
 static char gLastStr[12] = ""; static int gLastPg = -1; static bool gLastLink = false; static bool gLastPushFlip = false;
+static long gLastLedSig = -999;   // LED panel state hash — redraw only on change
 static void pushScreen(){                         // blit buffer to LCD, rotated 180° when flipped
   if (gFlip) scr.pushRotated(180);
   else       scr.pushSprite(0, 0);
@@ -249,35 +250,51 @@ void loop(){
   bool alarm = gAlertCode && (now - gAlertStart < 4000);
 
   // ---- LED panel: alert icon OR 4 vertical bars ----
-  px.setBrightness(PX_LEVELS[gBrightIdx]);      // local brightness (long-press cycles)
-  px.clear();
-  if (alarm){
-    const AlertDef& ad = ALERTS[gAlertCode];
-    drawIcon(ICONS[ad.icon], ad.red ? px.Color(255,0,0) : px.Color(255,150,0));
+  // ---- LED panel: redraw + px.show() ONLY when the picture changes ----
+  //  (px.show() for 128 LEDs is ~4ms AND disables IRQs — doing it every loop was the lag)
+  bool blinkPhase = (now / 150) & 1;
+  float spd = p.speed_x10/10.0f, duty = p.duty_x10/10.0f;
+  bool dutyBlink = (duty >= 90.0f) && blinkPhase;
+  long ledSig;
+  if (alarm)      ledSig = 1000000L + gAlertCode * 10 + gBrightIdx + gFlip * 100;
+  else if (link){
+    int sh = (int)roundf(constrain(spd/45.0f,0.f,1.f)*16);
+    int dh = dutyBlink ? 0 : (int)roundf(constrain(duty/95.0f,0.f,1.f)*16);
+    int bh = (int)roundf(constrain(p.batt_pct/100.0f,0.f,1.f)*16);
+    int th = (int)roundf(constrain(p.motor_temp/90.0f,0.f,1.f)*16);
+    ledSig = sh + dh*17L + bh*289L + th*4913L + (long)gBrightIdx*83521L + (long)gFlip*400000L;
+  } else ledSig = -2 - gFlip;
+
+  if (ledSig != gLastLedSig){
+    gLastLedSig = ledSig;
+    px.setBrightness(PX_LEVELS[gBrightIdx]);
+    px.clear();
+    if (alarm){
+      const AlertDef& ad = ALERTS[gAlertCode];
+      drawIcon(ICONS[ad.icon], ad.red ? px.Color(255,0,0) : px.Color(255,150,0));
+    } else if (link){
+      float k = constrain((spd-25.0f)/15.0f, 0.f, 1.f);
+      vbarC(0,1, spd/45.0f, px.Color((int)(k*255),(int)((1-k)*150),(int)((1-k)*255)));   // speed blue->red
+      uint32_t dc = duty<70 ? px.Color(255,170,0) : duty<80 ? px.Color(255,90,0) : px.Color(255,0,0);
+      vbarC(3,4, dutyBlink ? 0.0f : duty/95.0f, dc);                                      // duty
+      uint32_t bc = p.batt_pct<25 ? px.Color(255,0,0) : p.batt_pct<50 ? px.Color(255,150,0) : px.Color(0,200,0);
+      vbarC(6,6, p.batt_pct/100.0f, bc);                                                  // battery 1px
+      int mt = p.motor_temp;
+      uint32_t tc = mt<55 ? px.Color(0,200,0) : mt<70 ? px.Color(200,200,0) : mt<82 ? px.Color(255,120,0) : px.Color(255,0,0);
+      vbarC(7,7, mt/90.0f, tc);                                                           // motor temp 1px
+    } else {
+      for (int y=6;y<=9;y++) px.setPixelColor(xy(3,y), px.Color(60,0,0));
+    }
     px.show();
-    if (gAlertCode != gAlarmShown){ drawAlertScreen(ad); gAlarmShown = gAlertCode; }
-    delay(8); return;
   }
-  if (gAlarmShown){ gLastPg = -1; gAlarmShown = 0; }   // alarm ended → force normal redraw
-  if (link){
-    float spd = p.speed_x10/10.0f, duty = p.duty_x10/10.0f;
-    float k = constrain((spd-25.0f)/15.0f, 0.f, 1.f);
-    vbarC(0,1, spd/45.0f, px.Color((int)(k*255),(int)((1-k)*150),(int)((1-k)*255)));     // speed blue->red
-    uint32_t dc = duty<70 ? px.Color(255,170,0) : duty<80 ? px.Color(255,90,0) : px.Color(255,0,0);
-    bool dutyBlink = (duty >= 90.0f) && ((now/150)&1);    // ≥90% → bar blinks (critical)
-    vbarC(3,4, dutyBlink ? 0.0f : duty/95.0f, dc);                                       // duty
-    uint32_t bc = p.batt_pct<25 ? px.Color(255,0,0) : p.batt_pct<50 ? px.Color(255,150,0) : px.Color(0,200,0);
-    vbarC(6,6, p.batt_pct/100.0f, bc);                                                   // battery 1px
-    int mt = p.motor_temp;
-    uint32_t tc = mt<55 ? px.Color(0,200,0) : mt<70 ? px.Color(200,200,0) : mt<82 ? px.Color(255,120,0) : px.Color(255,0,0);
-    vbarC(7,7, mt/90.0f, tc);                                                            // motor temp 1px
+
+  // ---- AtomS3R screen ----
+  if (alarm){
+    if (gAlertCode != gAlarmShown){ drawAlertScreen(ALERTS[gAlertCode]); gAlarmShown = gAlertCode; }
   } else {
-    for (int y=6;y<=9;y++) px.setPixelColor(xy(3,y), px.Color(60,0,0));
+    if (gAlarmShown){ gLastPg = -1; gAlarmShown = 0; }   // alarm ended → force normal redraw
+    drawScreen(link, p);
   }
-  px.show();
 
-  // ---- AtomS3R screen: selected metric (button cycles speed/batt/temp/duty) ----
-  drawScreen(link, p);
-
-  delay(8);
+  delay(2);
 }
