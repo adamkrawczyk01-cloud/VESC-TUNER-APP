@@ -299,6 +299,15 @@ static uint32_t gLastKeyMs = 0;          // display auto-sleep (transmitter — 
 static bool     gScreenOff = false;
 #define SCREEN_IDLE_MS 30000             // dim after 30 s without a keypress
 
+// WiFi keyboard config ([C]: scan → pick → type password → save+connect)
+static int    gWifiCfg = 0;              // 0 off, 1 pick network, 2 enter password
+static int    gWifiScanN = 0, gWifiSel = 0;
+static String gWifiScanSsid[10];
+static String gWifiPass = "";
+static void   startWifiScan();           // fwd decl (defined with the WiFi block)
+static void   drawWifiCfg();
+static void   wifiSaveNetwork(const String& ssid, const String& pass);
+
 // ── GPS (M5Stack GPS Unit v1.1, NMEA over the Grove UART) ─────────────────────
 //  Plug the unit into the Cardputer Grove port. Grove pins = G1 (GPIO1) /
 //  G2 (GPIO2). No fix after ~1 min outdoors? swap GPS_RX/TX, or try 38400 baud.
@@ -1716,6 +1725,24 @@ static void handleKeys() {
     if (gScreenOff) { M5Cardputer.Display.setBrightness(120); gScreenOff = false; return; }
 
     auto st = M5Cardputer.Keyboard.keysState();
+
+    // ── WiFi setup mode ([C]) — uses full keystate for password/enter/del ──
+    if (gWifiCfg == 2) {                           // typing the password
+        if (st.del) { if (gWifiPass.length()) gWifiPass.remove(gWifiPass.length() - 1); else gWifiCfg = 1; drawWifiCfg(); return; }
+        if (st.enter) { wifiSaveNetwork(gWifiScanSsid[gWifiSel], gWifiPass);
+                        gWifiCfg = 0; gScreen = 10; renderScreen(); canvas.pushSprite(0, 0); wifiConnect(); return; }
+        for (char c0 : st.word) if (isprint((unsigned char)c0)) gWifiPass += c0;
+        drawWifiCfg(); return;
+    }
+    if (gWifiCfg == 1) {                           // picking a network
+        for (char c0 : st.word) { char c = tolower(c0);
+            if (c == 'p') { startWifiScan(); return; }
+            if (c == 'm') { gWifiCfg = 0; return; }
+            if (c >= '1' && c <= '6' && (c - '1') < gWifiScanN) { gWifiSel = c - '1'; gWifiPass = ""; gWifiCfg = 2; drawWifiCfg(); return; }
+        }
+        return;
+    }
+
     for (char c : st.word) {
         c = tolower(c);
 
@@ -1780,6 +1807,8 @@ static void handleKeys() {
             wifiDisconnect();
             continue;
         }
+        // [C] — WiFi setup: scan networks, pick, type password, save to SD
+        if (c == 'c') { startWifiScan(); continue; }
 
         // RIDE (0) — [R] toggles logging. Manual stop disarms auto-start
         // until the board reconnects (power-cycle = fresh log).
@@ -2478,6 +2507,33 @@ static bool wifiReadCreds(String& ssid, String& pass) {
     return ssid.length() > 0;
 }
 
+// read all saved networks: "SSID\tPASS" per line (+ legacy line1/line2 format)
+static int wifiReadNetworks(String s[], String p[], int maxN) {
+    int n = 0;
+    if (gSdOk && SD.exists("/wifi.txt")) {
+        File f = SD.open("/wifi.txt", FILE_READ);
+        if (f) {
+            String L[10]; int ln = 0;
+            while (f.available() && ln < 10) { String l = f.readStringUntil('\n'); l.trim(); if (l.length()) L[ln++] = l; }
+            f.close();
+            bool tab = false; for (int i = 0; i < ln; i++) if (L[i].indexOf('\t') >= 0) tab = true;
+            if (tab) { for (int i = 0; i < ln && n < maxN; i++) { int t = L[i].indexOf('\t'); if (t > 0) { s[n] = L[i].substring(0, t); p[n] = L[i].substring(t + 1); n++; } } }
+            else if (ln >= 1) { s[0] = L[0]; p[0] = ln >= 2 ? L[1] : ""; n = 1; }   // legacy
+        }
+    }
+    if (n == 0) { Preferences pr; pr.begin("vesc", true); String ss = pr.getString("wifi_ssid", ""); if (ss.length()) { s[0] = ss; p[0] = pr.getString("wifi_pass", ""); n = 1; } pr.end(); }
+    return n;
+}
+// append/replace a network on SD (tab format) + cache latest to NVS
+static void wifiSaveNetwork(const String& ssid, const String& pass) {
+    String s[10], p[10]; int n = wifiReadNetworks(s, p, 10);
+    String out;
+    for (int i = 0; i < n; i++) if (s[i] != ssid) out += s[i] + "\t" + p[i] + "\n";
+    out += ssid + "\t" + pass + "\n";
+    if (gSdOk) { SD.remove("/wifi.txt"); File f = SD.open("/wifi.txt", FILE_WRITE); if (f) { f.print(out); f.close(); } }
+    Preferences pr; pr.begin("vesc", false); pr.putString("wifi_ssid", ssid); pr.putString("wifi_pass", pass); pr.end();
+}
+
 // JSON-escape a filename (filenames are simple, but be safe)
 static String jsonEsc(const String& s) {
     String o; for (size_t i = 0; i < s.length(); i++) { char c = s[i];
@@ -2618,22 +2674,26 @@ static void wifiRoutes() {
 
 // Connect to the saved home network and start the LAN server. User-triggered ([W]).
 static bool wifiConnect() {
-    String ssid, pass;
-    if (!wifiReadCreds(ssid, pass)) { Serial.println("[WiFi] no creds — put SSID/pass in SD /wifi.txt"); return false; }
-    gWifiSsid = ssid;
+    String s[10], p[10];
+    int n = wifiReadNetworks(s, p, 10);
+    if (n == 0) { Serial.println("[WiFi] no creds — press [C] to add a network"); return false; }
     WiFi.mode(WIFI_STA);
-    WiFi.begin(ssid.c_str(), pass.c_str());
-    Serial.printf("[WiFi] connecting to %s ...\n", ssid.c_str());
-    uint32_t t0 = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - t0 < 12000) { delay(200); }
-    if (WiFi.status() != WL_CONNECTED) { Serial.println("[WiFi] connect timeout"); gWifiOn = false; return false; }
-    gWifiIp = WiFi.localIP().toString();
-    if (MDNS.begin("vesctuner")) MDNS.addService("http", "tcp", 80);
-    wifiRoutes();
-    gWeb.begin();
-    gWifiOn = true;
-    Serial.printf("[WiFi] up: http://%s/  (http://vesctuner.local/)\n", gWifiIp.c_str());
-    return true;
+    for (int i = 0; i < n; i++) {                 // try each saved network in order
+        gWifiSsid = s[i];
+        drawWifi(); canvas.pushSprite(0, 0);
+        WiFi.begin(s[i].c_str(), p[i].c_str());
+        Serial.printf("[WiFi] trying %s ...\n", s[i].c_str());
+        uint32_t t0 = millis();
+        while (WiFi.status() != WL_CONNECTED && millis() - t0 < 8000) { delay(150); }
+        if (WiFi.status() == WL_CONNECTED) {
+            gWifiIp = WiFi.localIP().toString();
+            if (MDNS.begin("vesctuner")) MDNS.addService("http", "tcp", 80);
+            wifiRoutes(); gWeb.begin(); gWifiOn = true;
+            Serial.printf("[WiFi] up: http://%s/  (http://vesctuner.local/)\n", gWifiIp.c_str());
+            return true;
+        }
+    }
+    Serial.println("[WiFi] no saved network reachable"); gWifiOn = false; return false;
 }
 
 static void wifiDisconnect() {
@@ -2665,8 +2725,45 @@ static void drawWifi() {
         canvas.setTextColor(C_VOLT);
         canvas.drawString("[W] connect to home WiFi", 6, y); y += 14;
         canvas.setTextColor(C_DGREY);
-        canvas.drawString("then browse vesctuner.local", 6, y);
+        canvas.drawString("[C] add WiFi network (scan+type)", 6, y);
     }
+}
+
+static void drawWifiCfg() {
+    canvas.fillScreen(C_BG);
+    canvas.setTextDatum(TL_DATUM); canvas.setTextSize(1);
+    canvas.setTextColor(C_CYAN); canvas.drawString("WIFI SETUP", 2, 2);
+    if (gWifiCfg == 1) {
+        canvas.setTextColor(C_GREY); canvas.drawString("pick a network:", 72, 2);
+        for (int i = 0; i < gWifiScanN && i < 6; i++) {
+            char line[52]; snprintf(line, sizeof(line), "[%d] %s", i + 1, gWifiScanSsid[i].c_str());
+            canvas.setTextColor(C_WHITE); canvas.drawString(line, 4, 18 + i * 16);
+        }
+        if (gWifiScanN == 0) { canvas.setTextColor(C_GREY); canvas.drawString("(no networks - [P] rescan)", 4, 20); }
+        canvas.setTextColor(C_GREY); canvas.drawString("[1-6]pick  [P]rescan  [M]back", 2, 126);
+    } else {
+        canvas.setTextColor(C_GREY); canvas.drawString("network:", 2, 22);
+        canvas.setTextColor(C_WHITE); canvas.drawString(gWifiScanSsid[gWifiSel], 60, 22);
+        canvas.setTextColor(C_GREY); canvas.drawString("password:", 2, 48);
+        canvas.setTextColor(C_VOLT); canvas.drawString(gWifiPass + "_", 4, 66);
+        canvas.setTextColor(C_GREY); canvas.drawString("type  [ENTER]save+connect  [DEL]back", 2, 126);
+    }
+    canvas.pushSprite(0, 0);
+}
+static void startWifiScan() {
+    gWifiCfg = 1; gWifiScanN = 0;
+    canvas.fillScreen(C_BG); canvas.setTextDatum(TL_DATUM); canvas.setTextSize(1);
+    canvas.setTextColor(C_CYAN); canvas.drawString("WIFI SETUP", 2, 2);
+    canvas.setTextColor(C_GREY); canvas.drawString("scanning...", 4, 40); canvas.pushSprite(0, 0);
+    WiFi.mode(WIFI_STA);
+    int n = WiFi.scanNetworks();
+    for (int i = 0; i < n && gWifiScanN < 10; i++) {
+        String ss = WiFi.SSID(i);
+        if (!ss.length()) continue;
+        bool dup = false; for (int j = 0; j < gWifiScanN; j++) if (gWifiScanSsid[j] == ss) dup = true;
+        if (!dup) gWifiScanSsid[gWifiScanN++] = ss;
+    }
+    drawWifiCfg();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2992,7 +3089,7 @@ void loop() {
 
     // Render active screen — throttled to ~15Hz and skipped when asleep, so the loop
     // stays free for fast BLE polling + ESP-NOW (a full canvas push each loop was the lag).
-    if (!gInScanMenu && !gScreenOff) {
+    if (!gInScanMenu && !gScreenOff && !gWifiCfg) {
         static uint32_t gLastRenderMs = 0;
         if (now - gLastRenderMs >= 66) {
             gLastRenderMs = now;
