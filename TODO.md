@@ -30,7 +30,14 @@ Control handshake quirks (FW_VERSION/MTU); latency. Mitigate: raw relay, no doub
 
 ---
 
-## 🪖 Concept: Helmet HUD (design only — see memory helmet-hud-concept)
+## 🪖 Helmet / wrist HUD (see memory helmet-hud-concept)
+
+**[x] Dual-source HUD (2026-08-02).** AtomS3R now works WITH or WITHOUT the Cardputer:
+prefers ESP-NOW when the Cardputer is broadcasting (it holds the link + logs SD/GPS),
+else connects DIRECTLY to the board over BLE (ported NimBLE stack: CAN-wrap + reassembler
++ GET_VALUES/BMS parse). Board picker (click=next, hold=confirm), remembers last board
+(auto-connect on boot), triple-click at speed 0 = re-pick. Auto-fallback both ways at
+runtime (yields the single BLE link when the Cardputer returns). Read-only.
 
 Miniaturize the Cardputer rig into a helmet heads-up display.
 - Architecture: board unit (BLE→VESC, SD black box) **broadcasts ESP-NOW** → helmet
