@@ -1384,6 +1384,27 @@ static float packVoltage() {
     return (gBms.valid && gBms.vTot > 20.f && gBms.vTot < 130.f) ? gBms.vTot : gV.voltage;
 }
 
+// Battery state-of-charge (0..1), or -1 if there's no reading yet. Mapped from the
+// MEASURED pack voltage over the profile range — the VESC's battery_level
+// (gV.batt_pct) is unreliable on this setup (a wrong cell count in the VESC config
+// saturates it at 100%, e.g. 72.9V reported as full), so voltage is the source of
+// truth; battery_level is only a last resort when voltage is invalid. Single source
+// for BOTH the on-screen footer and the ESP-NOW HUD packet so they can't drift.
+static float batterySoc() {
+    int   cells = (gProfile.batt_cells >= 4 && gProfile.batt_cells <= 32) ? gProfile.batt_cells : N_CELLS_DEF;
+    float vmin = cells * 3.0f, vmax = cells * 4.2f;
+    if (gProfile.batt_min_v > 10.f && gProfile.batt_min_v < vmax &&
+        gProfile.batt_max_v > gProfile.batt_min_v && gProfile.batt_max_v < 200.f) {
+        vmin = gProfile.batt_min_v; vmax = gProfile.batt_max_v;
+    }
+    float pv = packVoltage();   // prefers BMS cell-sum over charger-inflated v_in
+    if ((gV.valid || gBms.valid) && pv > 1.f)
+        return constrain((pv - vmin) / (vmax - vmin), 0.f, 1.f);
+    if (gV.setup && gV.batt_pct > 0)
+        return constrain(gV.batt_pct / 100.f, 0.f, 1.f);
+    return -1.f;
+}
+
 // Seed the system clock from the build date/time (the Cardputer has no RTC that
 // survives power-off). Makes SD files get a sane date (~flash date) instead of
 // 1980/2033. Re-applied every boot.
@@ -2061,27 +2082,9 @@ static void drawRide() {
     // battery footer
     canvas.fillRect(0, 121, DW, 14, C_FOOT);
     canvas.drawFastHLine(0, 121, DW, C_PANEL);
-    // SOC from measured pack voltage (profile range). The VESC's battery_level
-    // (gV.batt_pct) is unreliable on this setup — a wrong cell count in the VESC
-    // config saturates it at 100% (e.g. 72.9V reported as full) — so trust the
-    // measured voltage; fall back to battery_level only if voltage is invalid.
-    // Sane voltage window from cell count (3.0–4.2 V/cell). The saved profile
-    // can be corrupt (we've seen batt_min_v=1587V from a bad mcconf/SD profile),
-    // so only trust profile min/max when they're physically plausible.
-    int   cells = (gProfile.batt_cells >= 4 && gProfile.batt_cells <= 32) ? gProfile.batt_cells : N_CELLS_DEF;
-    float vmin = cells * 3.0f, vmax = cells * 4.2f;
-    if (gProfile.batt_min_v > 10.f && gProfile.batt_min_v < vmax &&
-        gProfile.batt_max_v > gProfile.batt_min_v && gProfile.batt_max_v < 200.f) {
-        vmin = gProfile.batt_min_v; vmax = gProfile.batt_max_v;
-    }
-    // soc < 0 = no reading yet (not connected to a VESC) → show "--" not "0%".
-    // packVoltage() prefers the BMS cell-sum (true SoC) over charger-inflated v_in.
-    float pv = packVoltage();
-    float soc = -1.f;
-    if ((gV.valid || gBms.valid) && pv > 1.f)
-        soc = constrain((pv - vmin) / (vmax - vmin), 0.f, 1.f);
-    else if (gV.setup && gV.batt_pct > 0)
-        soc = constrain(gV.batt_pct / 100.f, 0.f, 1.f);
+    // SOC from measured pack voltage (see batterySoc()). soc < 0 = no reading yet
+    // (not connected to a VESC) → show "--" not "0%".
+    float soc = batterySoc();
     char bp[8];
     if (soc < 0.f) snprintf(bp, sizeof(bp), "--");
     else           snprintf(bp, sizeof(bp), "%d%%", (int)(soc * 100));
@@ -2823,12 +2826,8 @@ static void espnowSend() {
     if (gV.curr_mot < -8.f)                 fl |= 0x01;   // regen / braking
     if (gV.adc1 > 0.25f || gV.adc2 > 0.25f) fl |= 0x02;   // footpad engaged
     p.flags = fl;
-    int batt = (int)gV.batt_pct;
-    if (batt <= 0 && gProfile.batt_cells > 0) {
-        float vc = packVoltage() / gProfile.batt_cells;
-        batt = (int)((vc - 3.0f) / 1.2f * 100.f);
-    }
-    p.batt_pct   = (uint8_t)constrain(batt, 0, 100);
+    float soc = batterySoc();   // same voltage-based SOC the deck screen trusts (not gV.batt_pct)
+    p.batt_pct   = (uint8_t)(soc < 0.f ? 0 : constrain((int)(soc * 100.f), 0, 100));
     p.duty_limit = (uint8_t)(gProfile.tiltback_duty > 0 ? gProfile.tiltback_duty : 80);
     p.motor_temp = (uint8_t)constrain((int)gV.temp_mot, 0, 200);
     p.batt_temp  = (uint8_t)constrain((int)(gV.bms ? gV.temp_bat : 0.f), 0, 200);
