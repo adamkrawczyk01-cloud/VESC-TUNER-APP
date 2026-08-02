@@ -53,8 +53,8 @@
 // Compiled profile — the HUD has no SD/mcconf, so speed & SOC use these constants.
 // Defaults match the Cardputer profile (GAD / ADV2 board). A different board would
 // need these retuned for an accurate speed scale.
-#define POLE_PAIRS_DEF   15      // pole pairs (30-magnet motor)
-#define WHEEL_MM_DEF    254      // 10-inch wheel
+#define POLE_PAIRS_DEF   15      // pole pairs (30-magnet / 30-pole motor) — standard
+#define WHEEL_MM_DEF    234      // standard 11" board, GPS-calibrated effective diameter
 #define N_CELLS_DEF      20      // 20S battery fallback
 
 // ESP-NOW / display packet (shared render input for both sources)
@@ -161,6 +161,26 @@ static uint16_t gTxCount     = 0;
 static bool     gBleOk       = false;
 static bool     gUseWriteNoResp = true;
 static uint32_t gLastValRx   = 0;   // millis() of last fresh GET_VALUES parse
+
+// Per-board speed calibration, selected by the connected board's advertised BLE
+// name; falls back to the *_DEF constants. wheel_mm = GPS-calibrated effective
+// rolling diameter (reads true ground speed, ~6% under the nominal tyre size).
+// pole_pairs = VESC "Motor Poles" / 2.
+struct BoardCal { const char* key; float wheel_mm; int pole_pairs; };
+static const BoardCal BOARD_CAL[] = {
+  {"adv", 240.f, 15},   // ADV2 — 11.25" tyre, 30 poles (GPS ≈ 240mm effective)
+  {"gad", 234.f, 15},   // GAD  — 11" tyre,    30 poles
+};
+static float gWheelMm   = WHEEL_MM_DEF;
+static int   gPolePairs = POLE_PAIRS_DEF;
+static void applyBoardCal(const char* name){
+  gWheelMm=WHEEL_MM_DEF; gPolePairs=POLE_PAIRS_DEF;
+  if (!name){ Serial.println("[CAL] no name -> default"); return; }
+  std::string lc=name; for (auto& c:lc) c=tolower(c);
+  for (auto& b:BOARD_CAL)
+    if (lc.find(b.key)!=std::string::npos){ gWheelMm=b.wheel_mm; gPolePairs=b.pole_pairs; break; }
+  Serial.printf("[CAL] %s -> wheel=%.0f poles(pairs)=%d\n", name, gWheelMm, gPolePairs);
+}
 
 // ── VESC framing / codec (verbatim from the dashboard) ───────────────────────
 static uint16_t crc16(const uint8_t* d, size_t n){
@@ -279,8 +299,8 @@ static void parseValues(const uint8_t* p,int len){
   float rpm=(float)rdI32(p,23);
   gV.voltage=rdI16(p,27)/10.f;
   if (len>=54) gV.fault=p[53];
-  const float circ_km=(float)M_PI*WHEEL_MM_DEF/1e6f;
-  gV.speed_kmh=fabsf(rpm)/POLE_PAIRS_DEF*circ_km*60.f;
+  const float circ_km=(float)M_PI*gWheelMm/1e6f;      // per-board (see applyBoardCal)
+  gV.speed_kmh=fabsf(rpm)/gPolePairs*circ_km*60.f;
   gV.valid=true;
 }
 static void parseBms(const uint8_t* p,int len){
@@ -548,6 +568,7 @@ static bool bleConnect(const NimBLEAddress& addr){
   // remember this board for next boot
   const char* nm="board";
   for (int i=0;i<gScanCount;i++) if (gScanList[i].addr==addr && gScanList[i].name.size()>0) nm=gScanList[i].name.c_str();
+  applyBoardCal(nm);                                   // pick wheel/poles for this board
   { Preferences pr; pr.begin("vesc",false);
     pr.putString("lastmac",addr.toString().c_str()); pr.putString("lastname",nm); pr.end(); }
 
