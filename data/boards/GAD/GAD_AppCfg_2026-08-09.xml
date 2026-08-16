@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<APPConfiguration>
+    <ConfigVersion>2</ConfigVersion>
+    <controller_id>84</controller_id>
+    <timeout_msec>1000</timeout_msec>
+    <timeout_brake_current>0</timeout_brake_current>
+    <can_status_rate_1>50</can_status_rate_1>
+    <can_status_rate_2>5</can_status_rate_2>
+    <can_status_msgs_r1>15</can_status_msgs_r1>
+    <can_status_msgs_r2>0</can_status_msgs_r2>
+    <can_baud_rate>2</can_baud_rate>
+    <pairing_done>0</pairing_done>
+    <permanent_uart_enabled>1</permanent_uart_enabled>
+    <shutdown_mode>7</shutdown_mode>
+    <can_mode>0</can_mode>
+    <uavcan_esc_index>0</uavcan_esc_index>
+    <uavcan_raw_mode>0</uavcan_raw_mode>
+    <uavcan_raw_rpm_max>50000</uavcan_raw_rpm_max>
+    <uavcan_status_current_mode>0</uavcan_status_current_mode>
+    <servo_out_enable>0</servo_out_enable>
+    <kill_sw_mode>0</kill_sw_mode>
+    <app_to_use>3</app_to_use>
+    <imu_conf.type>1</imu_conf.type>
+    <imu_conf.mode>1</imu_conf.mode>
+    <imu_conf.filter>1</imu_conf.filter>
+    <imu_conf.accel_lowpass_filter_x>0</imu_conf.accel_lowpass_filter_x>
+    <imu_conf.accel_lowpass_filter_y>0</imu_conf.accel_lowpass_filter_y>
+    <imu_conf.accel_lowpass_filter_z>1</imu_conf.accel_lowpass_filter_z>
+    <imu_conf.gyro_lowpass_filter>0</imu_conf.gyro_lowpass_filter>
+    <imu_conf.sample_rate_hz>832</imu_conf.sample_rate_hz>
+    <imu_conf.use_magnetometer>1</imu_conf.use_magnetometer>
+    <imu_conf.accel_confidence_decay>0,1</imu_conf.accel_confidence_decay>
+    <imu_conf.mahony_kp>0,4</imu_conf.mahony_kp>
+    <imu_conf.mahony_ki>0</imu_conf.mahony_ki>
+    <imu_conf.madgwick_beta>0,1</imu_conf.madgwick_beta>
+    <imu_conf.rot_roll>179,158</imu_conf.rot_roll>
+    <imu_conf.rot_pitch>-5,11938</imu_conf.rot_pitch>
+    <imu_conf.rot_yaw>180</imu_conf.rot_yaw>
+    <imu_conf.accel_offsets__0>-0,000982449</imu_conf.accel_offsets__0>
+    <imu_conf.accel_offsets__1>-0,0102278</imu_conf.accel_offsets__1>
+    <imu_conf.accel_offsets__2>-0,00991688</imu_conf.accel_offsets__2>
+    <imu_conf.gyro_offsets__0>-0,58369</imu_conf.gyro_offsets__0>
+    <imu_conf.gyro_offsets__1>-4,80274</imu_conf.gyro_offsets__1>
+    <imu_conf.gyro_offsets__2>0,66563</imu_conf.gyro_offsets__2>
+</APPConfiguration>
