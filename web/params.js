@@ -8,6 +8,20 @@
    Loaded after reference.js. Uses C,el,kpi,sectionTitle,H,D,CFG,fmtTime.
    ============================================================ */
 
+// FOC observer enum, in firmware order. Verified against vedderb/vesc_tool
+// res/config/6.06/parameters_mcconf.xml <foc_observer_type><enumNames> — indices 2
+// and 3 used to be swapped here, which made every observer_type readout wrong
+// (the GAD board reports 2 = Ortega λ-comp, and Float Hub's UI confirms it).
+const FOC_OBSERVER_NAMES = [
+  'Ortega original',   // 0
+  'MXLEMMING',         // 1
+  'Ortega λ-comp',     // 2
+  'MXLEMMING λ-comp',  // 3
+  'MXV',               // 4  (6.06+)
+  'MXV λ-comp',        // 5
+  'MXV λ-comp lin',    // 6
+];
+
 // Values decoded from the GAD board backup (backup_003 == session_004_mcconf.bin).
 // Used as "current value" when no mcconf JSON is loaded. Only the current limits
 // decode reliably from the raw blob; the rest await the fw-6.5 confgenerator.
@@ -43,12 +57,20 @@ const VT_PARAMS = [
     {k:'foc_motor_r',          n:'Motor Resistance',      u:'mΩ',  scale:1000,  path:'Motor Cfg → FOC → General (Detect)', range:null, tier:'ro',     eff:'From detection. Wrong value → low-speed chatter / heat.'},
     {k:'foc_motor_l',          n:'Motor Inductance',      u:'µH',  scale:1e6,   path:'Motor Cfg → FOC → General (Detect)', range:null, tier:'ro',     eff:'From detection. Affects current-loop & observer.'},
     {k:'foc_motor_flux_linkage',n:'Flux Linkage',         u:'mWb', scale:1000,  path:'Motor Cfg → FOC → General (Detect)', range:null, tier:'ro',     eff:'From detection. Off value = #1 cause of low-speed crunch.'},
-    {k:'foc_observer_type',    n:'Observer Type',         u:'', enumNames:['Ortega original','MXLEMMING','MXLEMMING λ-comp','Ortega λ-comp'], path:'Motor Cfg → FOC → General', range:null, tier:'manual', eff:'Observer algorithm — changing it often fixes low-speed chatter.'},
+    {k:'foc_observer_type',    n:'Observer Type',         u:'', enumNames:FOC_OBSERVER_NAMES, path:'Motor Cfg → FOC → Advanced', range:null, tier:'manual', eff:'Observer algorithm — changing it often fixes low-speed chatter.'},
     {k:'foc_observer_gain',    n:'Observer Gain',         u:'',    path:'Motor Cfg → FOC → General',          range:null, tier:'manual', eff:'Position-estimate tracking. Too high = hunting/chatter at low speed.'},
     {k:'foc_openloop_rpm',     n:'Openloop ERPM',         u:'erpm',path:'Motor Cfg → FOC → Sensorless',       range:[0,2000], tier:'manual', eff:'How long it stays open-loop before handing to the observer.'},
-    {k:'foc_sl_erpm',          n:'Sensorless ERPM',       u:'erpm',path:'Motor Cfg → FOC → Sensorless',       range:[500,5000], tier:'manual', eff:'Open-loop → sensorless handoff. The noisy zone for chatter.'},
+    {k:'foc_sl_erpm',          n:'Sensorless ERPM',       u:'erpm',path:'Motor Cfg → FOC → General',          range:[500,5000], tier:'manual', eff:'Open-loop → sensorless handoff. The noisy zone for chatter.'},
     {k:'foc_current_kp',       n:'Current Loop Kp',       u:'',    path:'Motor Cfg → FOC → General',          range:null, tier:'manual', eff:'Current PI gain. Too high = audible whine/oscillation.'},
     {k:'foc_sensor_mode',      n:'Sensor Mode',           u:'',    path:'Motor Cfg → FOC → General',          range:null, tier:'ro',     eff:'Sensorless / Hall / Encoder.'},
+    // Low-speed position/current trio — the GAD ABS_OVER_CURRENT suspects (2026-08).
+    // Each differs from the working ADV2 AND from the VESC default; all three live in
+    // the "rotor position at ~0 erpm" domain, which is where that fault happens.
+    {k:'foc_sat_comp_mode',    n:'Saturation Comp Mode',  u:'', enumNames:['Disabled','Factor','Lambda','Lambda and Factor'], path:'Motor Cfg → FOC → Sensorless', range:null, tier:'manual', eff:'Lambda scales L by lambda_est/lambda (0.3–2.5x). On a salient motor at 0 erpm that can wreck the observer.'},
+    {k:'m_hall_extra_samples', n:'Hall Extra Samples',    u:'',    path:'Motor Cfg → FOC → Hall Sensors',     range:[0,5], tier:'manual', eff:'Median-filters the hall port. Higher = less position noise, longer control ISR.'},
+    // Bitfield, not an enum: bit0 Calibrate on Boot · bit1 Write Enabled · bit2 Auto Calibrate.
+    // enumNames is indexed by the combined value, so all 8 combinations are spelled out.
+    {k:'foc_offsets_cal_mode', n:'Offset Cal Mode',       u:'', enumNames:['(none)','on Boot','Write','on Boot + Write','Auto','on Boot + Auto','Write + Auto','on Boot + Write + Auto'], path:'Motor Cfg → FOC → Offsets', range:null, tier:'manual', eff:'Bit0 = re-measure current-sensor offsets each boot; stale offsets skew measured phase current.'},
   ]},
   { sec:'App · Float/Refloat', items:[
     {k:'tiltback_duty',     n:'Tiltback Duty',            u:'%', path:'App Cfg → Float → Tune', range:[60,90], tier:'manual', eff:'Duty where pushback engages. Your duty-Geiger limit.'},
@@ -106,7 +128,6 @@ function decodeMcconfBin(buf){
   if(!(out.l_current_max>1 && out.l_current_max<1000)) return null;   // sanity / version check
   return out;
 }
-const FOC_OBSERVER_NAMES = ['Ortega original','MXLEMMING','MXLEMMING λ-comp','Ortega λ-comp'];
 
 // current board value for a key: loaded config (mcconf JSON / VESC Tool XML)
 // first, else the decoded GAD snapshot. Applies the display-unit scale (e.g.
