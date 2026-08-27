@@ -460,20 +460,23 @@ static void drawIcon(const char* const* ic, uint32_t c){
       px.setPixelColor(xy(cx,cy), c);
     }
 }
-static void bootAnim(){
-  for (int h=0; h<=16; h++){
-    px.clear();
-    vbarC(0,1, h/16.0f, px.Color(0,150,255));
-    vbarC(3,4, h/16.0f, px.Color(255,150,0));
-    vbarC(6,6, h/16.0f, px.Color(0,200,0));
-    vbarC(7,7, h/16.0f, px.Color(255,80,0));
-    px.show(); delay(30);
+// Searching animation — the SAME four bars that later show speed, duty and
+// battery, running a travelling wave. There is no separate boot intro: the only
+// time the HUD holds you up is while it is actually looking for a board, and this
+// is what "looking" looks like. The instant it connects, the bars become the
+// gauge, so nothing on the panel is decoration.
+static void searchAnim(uint32_t t){
+  const int x0[4]={0,3,6,7}, x1[4]={1,4,6,7};
+  const uint32_t col[4]={ px.Color(0,150,255), px.Color(255,150,0),
+                          px.Color(0,200,0),   px.Color(255,80,0) };
+  px.clear();
+  for (int b=0;b<4;b++){
+    // phase-shifted sine per bar → the wave visibly travels across the panel
+    float ph = (t/90.0f) - b*0.7f;
+    float f  = 0.20f + 0.80f * (0.5f * (1.0f + sinf(ph)));
+    vbarC(x0[b], x1[b], f, col[b]);
   }
-  for (int i=0;i<NUM_LEDS;i++) px.setPixelColor(i, px.Color(150,150,150));
-  px.show(); delay(140);
-  const char* const* tst[4] = { IC_BOLT, IC_TEMP, IC_BATT, IC_WARN };
-  for (int i=0;i<4;i++){ px.clear(); drawIcon(tst[i], px.Color(170,170,170)); px.show(); delay(450); }
-  px.clear(); px.show();
+  px.show();
 }
 static void onRecv(const esp_now_recv_info_t*, const uint8_t* data, int len){
   if (len == (int)sizeof(hud_pkt_t) && data[0] == PKT_MAGIC){
@@ -640,26 +643,45 @@ static bool bleConnect(const NimBLEAddress& addr){
   gLastValMs=0; gLastBmsMs=0; gLastAllMs=0; gLastPg=-1;
   return true;
 }
-static void bleScan(){                          // populate the filtered picker list
-  gScanCount=0; gSelIdx=0;
-  drawBanner("SCAN", TFT_CYAN);
+// Scan in short slices so the bars keep moving. getResults() blocks for its whole
+// timeout, so one 5 s call would freeze the panel exactly when the rider is
+// waiting and wondering whether the thing is alive. Slices continue the same scan
+// (is_continue=true), so results accumulate as if it were one call.
+static void scanSliced(int totalMs){
   NimBLEScan* scan=NimBLEDevice::getScan();
   scan->setScanCallbacks(&gScanCB,true);
   scan->setActiveScan(true); scan->setInterval(100); scan->setWindow(99);
-  scan->getResults(5000,false);
+  uint32_t t0=millis(); bool cont=false;
+  while ((int)(millis()-t0) < totalMs){
+    scan->getResults(150, cont); cont=true;
+    searchAnim(millis());
+  }
+}
+static void bleScan(){                          // populate the filtered picker list
+  gScanCount=0; gSelIdx=0;
+  drawBanner("SCAN", TFT_CYAN);
+  scanSliced(5000);
 }
 static bool bleTryConnectSaved(){               // scan for the remembered board and connect
   Preferences pr; pr.begin("vesc",true); String mac=pr.getString("lastmac",""); pr.end();
   if (mac.length()<5) return false;
   drawBanner("FIND BRD", TFT_WHITE);
   gScanCount=0;
+  // Stop the moment the remembered board shows up — no reason to sit out the full
+  // window once we have what we came for.
   NimBLEScan* scan=NimBLEDevice::getScan();
   scan->setScanCallbacks(&gScanCB,true);
   scan->setActiveScan(true); scan->setInterval(100); scan->setWindow(99);
-  scan->getResults(5000,false);
-  for (int i=0;i<gScanCount;i++)
-    if (strcmp(gScanList[i].addr.toString().c_str(),mac.c_str())==0)
-      return bleConnect(gScanList[i].addr);
+  uint32_t t0=millis(); bool cont=false;
+  while (millis()-t0 < 5000){
+    scan->getResults(150, cont); cont=true;
+    searchAnim(millis());
+    for (int i=0;i<gScanCount;i++)
+      if (strcmp(gScanList[i].addr.toString().c_str(),mac.c_str())==0){
+        scan->stop();
+        return bleConnect(gScanList[i].addr);
+      }
+  }
   return false;
 }
 static void enterSelect(){ gSrc=SRC_BLE; gUi=UI_SELECT; bleScan(); drawSelect(); }
@@ -694,11 +716,21 @@ void setup(){
   if (esp_now_init() == ESP_OK) esp_now_register_recv_cb(onRecv);
   NimBLEDevice::init(HUD_NAME);
 
-  bootAnim();                                   // ~2.4s — doubles as the ESP-NOW listen window
+  // No boot intro. The old 2.4 s animation was also doing real work — it was the
+  // window in which a Cardputer broadcast could arrive — so it cannot simply be
+  // deleted, only shortened to what the job actually needs. The Cardputer sends at
+  // 30 Hz, so a packet is due every 33 ms; 400 ms is ~12 chances to hear one.
+  // Exit early the moment one lands, which is the common case.
+  uint32_t t0 = millis();
+  while (millis() - t0 < 400){
+    if (gLastRx) break;                         // Cardputer heard — stop waiting
+    delay(10);
+  }
 
   // Source decision: Cardputer broadcasting → ESP-NOW; else go direct BLE.
-  if (millis() - gLastRx < 1500){ gSrc=SRC_ESPNOW; gUi=UI_RUN; Serial.println("[SRC] ESP-NOW (Cardputer present)"); }
-  else { Serial.println("[SRC] no Cardputer -> direct BLE"); startBleMode(); }
+  if (gLastRx && millis() - gLastRx < 1500){
+    gSrc=SRC_ESPNOW; gUi=UI_RUN; Serial.println("[SRC] ESP-NOW (Cardputer present)");
+  } else { Serial.println("[SRC] no Cardputer -> direct BLE"); startBleMode(); }
 }
 
 // ── contextual button ────────────────────────────────────────────────────────
