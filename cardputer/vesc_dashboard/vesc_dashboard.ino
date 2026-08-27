@@ -19,9 +19,15 @@
 //       COMM_GET_MCCONF + COMM_GET_APPCONF at session start
 //
 //  SD layout:
-//    /sessions/session_NNN.csv
-//    /sessions/session_NNN_mcconf.json
-//    /sessions/session_NNN_appconf.json
+//    /sessions/session_NNN.csv            telemetry, ~12 Hz
+//    /sessions/session_NNN_raw.jsonl      every raw BLE chunk — replayable in web/
+//    /sessions/session_NNN_faults.txt     the board's own fault records
+//    /sessions/session_NNN_mcconf.{bin,json}   motor config at connect
+//    /sessions/session_NNN_appconf.bin    app config at connect
+//    /sessions/session_NNN_refloat.bin    RIDE TUNE at connect (kp/kp2/ki/ATR/...)
+//        Not decoded yet — offsets need one blob paired with a VESC Tool XML
+//        export, the same way the mcconf limits were resolved. Saved raw so the
+//        pairing can happen later instead of the tune being lost.
 //    /config/suggestions.json          (written by Mac → read by Cardputer)
 //    /config/changes_log.csv
 //
@@ -1665,6 +1671,17 @@ static void startSession() {
         char ap[64]; snprintf(ap, sizeof(ap), "/sessions/%s_appconf.bin", gSessName);
         File af = SD.open(ap, FILE_WRITE);
         if (af) { af.write(gAppconfRaw, gAppconfRawLen); af.close(); }
+    }
+    // Refloat's own config — the ride tune. Every parameter we actually experiment
+    // with (kp, kp2, ki, ATR, tiltback) lives HERE, not in mcconf, and until now no
+    // session recorded it. Session 020 was ridden on kp2 = 0.7 instead of 0.9 and
+    // nothing in the files said so; a week later nobody would reconstruct which
+    // recording ran which tune. A log that cannot tell you its own settings can't
+    // settle an argument about them.
+    if (gCustomCfgRawLen > 0) {
+        char cp[64]; snprintf(cp, sizeof(cp), "/sessions/%s_refloat.bin", gSessName);
+        File cf = SD.open(cp, FILE_WRITE);
+        if (cf) { cf.write(gCustomCfgRaw, gCustomCfgRawLen); cf.close(); }
     }
     gRec = true;
     Serial.printf("[LOG] start %s\n", gSessName);
