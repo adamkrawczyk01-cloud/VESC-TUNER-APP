@@ -24,5 +24,14 @@ build/
 # Scratch
 analysis/
 
+# Ride logs. This repo is PUBLIC and these carry GPS lat/lon for every session —
+# publishing them publishes where the rider lives and rides. Curated extracts for
+# a specific analysis go in data/boards/<board>/ instead, with GPS stripped.
+sessions/
+
+# SD card dump. Contains BruceRFID/keys.conf — RFID keys must never be published.
+SD /
+"SD "/
+
 # but DO ship decoded-config blobs for the web app
 !web/rides/*.bin
