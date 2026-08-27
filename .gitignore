@@ -35,3 +35,7 @@ SD /
 
 # but DO ship decoded-config blobs for the web app
 !web/rides/*.bin
+
+# Third-party VESCape app source — local reference only (GPL-3.0, upstream repo),
+# not ours to publish. We took ideas and the .jsonl line format, never code.
+vescape-dev/

@@ -145,14 +145,36 @@ const SANE = {
   curr_in_A:[-2000,2000], curr_mot_A:[-2000,2000], iq_A:[-2000,2000], id_A:[-2000,2000],
   speed_kmh:[-5,150], duty_pct:[-110,110], rpm:[-200000,200000],
 };
+/* Sanitize by MARKING, never by deleting.
+
+   This used to null out "impossible" samples in place. That is destructive in a
+   way that bit us: a frozen 35.1 V reading was read as a real voltage collapse
+   because nothing in the data said it was stale, and the whole diagnosis went
+   sideways for a day. Raw values are evidence — the judgement about them belongs
+   in a separate, visible layer.
+
+   d.excluded[column] = Set of row indices. Raw arrays stay untouched, so graphs
+   can draw excluded points differently and metrics can skip them, while the
+   original reading is still there to inspect. Same stance as VESCape's ADR-0008
+   (metric exclusions instead of mutated samples).                            */
 function sanitize(d){
+  d.excluded = {};
+  const mark=(name,i)=>{ (d.excluded[name] || (d.excluded[name]=new Set())).add(i); };
   const bound=(name,lo,hi)=>{ const a=d.col[name]; if(!a) return;
-    for(let i=0;i<a.length;i++){ const v=a[i]; if(v!=null && (v<lo||v>hi)) a[i]=null; } };
+    for(let i=0;i<a.length;i++){ const v=a[i]; if(v!=null && (v<lo||v>hi)) mark(name,i); } };
   for(const k in SANE) bound(k, SANE[k][0], SANE[k][1]);
   for(const f of (d.fields||[])){ if(/^cell_\d+$/.test(f)) bound(f,2,5); if(/^bms_temp_\d+$/.test(f)) bound(f,-40,150); }
-  // odometer spike rejection: null lone samples that jump >2 km from BOTH neighbours
+  // odometer spike rejection: lone samples that jump >2 km from BOTH neighbours
   const o=d.col.odo_km; if(o){ for(let i=1;i<d.n-1;i++){
-    if(o[i]!=null && o[i-1]!=null && o[i+1]!=null && Math.abs(o[i]-o[i-1])>2 && Math.abs(o[i]-o[i+1])>2) o[i]=null; } }
+    if(o[i]!=null && o[i-1]!=null && o[i+1]!=null && Math.abs(o[i]-o[i-1])>2 && Math.abs(o[i]-o[i+1])>2) mark('odo_km',i); } }
+}
+/* Excluded-aware reader. Views that want sanitized numbers use this; anything
+   reading d.col directly still sees exactly what the board sent. */
+function colClean(d,name){
+  const a=d.col[name]; if(!a) return [];
+  const ex=d.excluded && d.excluded[name];
+  if(!ex || !ex.size) return a;
+  return a.map((v,i)=> ex.has(i) ? null : v);
 }
 /* SOC from pack voltage (3.0–4.2 V/cell), independent of the unreliable VESC
    battery_level (batt_pct, which saturates at 100% on a wrong cell count).
@@ -249,9 +271,15 @@ function parseFloatControl(text, name){
 }
 function importCSV(text, name, forced, meta){
   let fmt = forced;
+  // A Debug Recording is JSON Lines, not CSV, so it has to be sniffed by content
+  // before the header-based detection runs. See web/jsonl.js.
+  if(!fmt && typeof jlIsRecording==='function' && jlIsRecording(text)) fmt='jsonl';
   if(!fmt){ const nl=text.indexOf('\n'); const head=(nl<0?text:text.slice(0,nl)).split(',').map(s=>s.trim()); fmt=detectFormat(head); }
-  const d = fmt==='floatcontrol' ? parseFloatControl(text,name) : parseCSV(text,name);
+  const d = fmt==='jsonl'        ? parseJSONL(text,name)
+          : fmt==='floatcontrol' ? parseFloatControl(text,name)
+          :                        parseCSV(text,name);
   if(!d){ alert('Could not parse this file.'); return; }
+  if(!d.fields) d.fields = Object.keys(d.col);   // jsonl builds columns dynamically
   const dn = parseDateFromName(name);
   d.dateHint = (meta&&meta.date) || (dn&&dn.date) || null;
   d.timeHint = (meta&&meta.time) || (dn&&dn.time) || null;
@@ -264,7 +292,9 @@ function loadCSV(text, name) { importCSV(text, name); }   // auto-detect (drag-d
    H(d) returns a helper bundle bound to dataset d. Existing views do
    `const {has,mx,mn,last,avg}=H(D)`; compare view uses H(CMP) too.     */
 function H(d){
-  const c = n => d.col[n] || [];
+  // Statistics read through the exclusion layer; graphs still read d.col and get
+  // the untouched board data. That split is the whole point of sanitize().
+  const c = n => colClean(d, n);
   const has = n => d.col[n] && d.col[n].some(v => v != null);
   const mx = n => { let m=-Infinity; for(const v of c(n)) if(v!=null&&v>m) m=v; return m===-Infinity?0:m; };
   const mn = n => { let m= Infinity; for(const v of c(n)) if(v!=null&&v<m) m=v; return m=== Infinity?0:m; };

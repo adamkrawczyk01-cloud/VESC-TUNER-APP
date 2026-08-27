@@ -96,6 +96,24 @@
 // fault_vec[] array — no writes, no motor action, no config touched.
 static const char TERM_CMD_FAULTS[] = "faults";
 
+// Which ALLDATA mode the last reply carried, and when mode 2 last refreshed
+// foc_id. Mode 1 is 34 B and wins the race for bandwidth; mode 2 is 42 B and was
+// what we used to ask for on every single poll — which is why 78-83% of ALLDATA
+// samples in past logs were stale. Idea from VESCape's ADR-0013 (hot/cold split).
+// Request and reply are tracked separately on purpose: the request time drives the
+// cadence, the reply time drives the staleness column. Folding them into one would
+// mean a mode 2 that never comes back either spams the link forever or silently
+// passes an old foc_id off as current.
+static bool     gIdlePaused   = false; // parked >30s: stop writing rows
+static uint8_t  gAllMode      = 0;   // mode of the most recent reply
+static uint32_t gLastMode2Req = 0;   // when we last ASKED for mode 2
+static uint32_t gLastMode2Rx  = 0;   // when mode 2 last actually ARRIVED
+
+// Raw-BLE recorder lives further down but is tapped from the senders above it.
+// Declared here rather than relying on Arduino's auto-prototypes, which we have
+// already been bitten by once (a struct used before its definition).
+static void rawQueue(uint8_t dir, const uint8_t* d, size_t n);
+
 // ── Display dimensions ───────────────────────────────────────────────────────
 #define DW 240
 #define DH 135
@@ -235,6 +253,11 @@ struct DeviceProfile {
     float batt_min_v  = N_CELLS_DEF * 3.0f;
     float batt_nom_v  = N_CELLS_DEF * 3.6f;
     float batt_cap_ah = 0.0f;
+    // Whole-pack internal resistance, used to undo voltage sag before reading the
+    // SoC curve. Default measured on the GAD pack (20S2P): 77.38 V resting fell to
+    // 61.55 V under ~74 A of battery current -> 15.83/74 = 214 mOhm, ~21 mOhm per
+    // cell, which is normal for 21700s. Set 0 to disable the correction.
+    float pack_ir_mohm = 214.0f;
     float tiltback_duty = 80.0f;   // duty-Geiger limit — set to your Refloat tiltback_duty
     // Motor / wheel
     int   motor_poles = POLE_PAIRS_DEF;   // pole pairs (si_motor_poles)
@@ -485,23 +508,27 @@ static void vescSend(uint8_t cmd) {
         for (int i = 0; i < len; i++) Serial.printf(" %02X", pkt[i]);
         Serial.println();
     }
+    rawQueue(1, pkt, len);
     bool ok = gCharRx->writeValue(pkt, len, !gUseWriteNoResp);
     if (gTxCount <= 5 || cmd == CMD_FW_VERSION || cmd == CMD_PING_CAN)
         Serial.printf("[TX] writeValue -> %s\n", ok ? "OK" : "FAIL");
 }
 
-// Refloat GET_ALLDATA (mode 2) — CAN-forwarded when on a bridge board.
+// Refloat GET_ALLDATA — CAN-forwarded when on a bridge board.
 // Multi-byte payload, so it can't use vescSend (which wraps a single cmd byte).
-static void vescSendAllData() {
+//   mode 1 = 34 B, ride state only          <- the default now
+//   mode 2 = 42 B, adds foc_id (and temps/odometer we take from elsewhere)
+static void vescSendAllData(uint8_t mode) {
     if (!gCharRx || !gBleOk) return;
     uint8_t pay[8]; int plen = 0;
     if (gCanId >= 0) { pay[plen++] = CMD_FORWARD_CAN; pay[plen++] = (uint8_t)gCanId; }
     pay[plen++] = CMD_CUSTOM_APP_DATA;
     pay[plen++] = REFLOAT_MAGIC;
     pay[plen++] = REFLOAT_GET_ALLDATA;
-    pay[plen++] = 2;                 // mode 2 = RT + odometer + temps
+    pay[plen++] = mode;
     uint8_t pkt[16]; int len = buildPkt(pkt, pay, plen);
     gTxCount++;
+    rawQueue(1, pkt, len);
     gCharRx->writeValue(pkt, len, !gUseWriteNoResp);
 }
 
@@ -514,6 +541,7 @@ static void vescSendCustomCfg() {
     pay[plen++] = 0;                 // confInd 0 = main config
     uint8_t pkt[16]; int len = buildPkt(pkt, pay, plen);
     gTxCount++;
+    rawQueue(1, pkt, len);
     gCharRx->writeValue(pkt, len, !gUseWriteNoResp);
 }
 
@@ -552,6 +580,7 @@ static void vescRequestFaults() {
     uint8_t pkt[40]; int len = buildPkt(pkt, pay, plen);
     gTxCount++;
     gFaultDumpLen = 0; gFaultCapturing = true; gFaultCapStart = millis();
+    rawQueue(1, pkt, len);
     gCharRx->writeValue(pkt, len, !gUseWriteNoResp);
     Serial.printf("[FAULTDUMP] asked for \"%s\"\n", TERM_CMD_FAULTS);
 }
@@ -588,6 +617,137 @@ static void faultDumpSave() {
     f.println();
     f.close();
     Serial.printf("[FAULTDUMP] %u B -> %s\n", gFaultDumpLen, path);
+}
+
+// ── Raw BLE recording — VESCape-compatible .jsonl ────────────────────────────
+// The abs-overcurrent hunt keeps needing another ride to test the next idea. A
+// recording of every raw BLE chunk removes that: replay it as many times as you
+// like, against as many parser changes as you like, without the board.
+// Format follows VESCape's Debug Recording (their ADR-0024) so the files are
+// interchangeable in both directions. Format only — no code was taken; VESCape is
+// GPL-3.0 and this repo is not.
+//   {"t":0,"kind":"meta","version":1,"deviceName":..,"pollIntervalMs":40,..}
+//   {"t":1201,"kind":"ble-chunk","direction":"tx","base64":".."}
+//   {"t":725,"kind":"location","latitude":..,"longitude":..,"speedMps":..}
+// `t` is ms since startSession(), the same clock as ts_ms in the CSV, so a row in
+// one lines up with a chunk in the other.
+static bool     gRawRec     = true;      // [J] toggles; costs ~6 KB/s of card
+static uint32_t gRawT0      = 0;         // millis() at session start
+static uint32_t gRawDropped = 0;         // queue overflows — must stay 0
+static uint32_t gRawChunks  = 0;
+static uint32_t gRawBytes   = 0;
+
+// Queue records as [u32 t][u8 dir][u16 len][payload]. The BLE callback only
+// memcpy's; base64 and SD writes happen in loop(). Doing file IO inside a NimBLE
+// callback is what crashed the HUD relay — same mistake, don't repeat it.
+static uint8_t  gRawQ[6144];
+static volatile uint16_t gRawQLen = 0;
+static portMUX_TYPE gRawMux = portMUX_INITIALIZER_UNLOCKED;
+
+static void rawQueue(uint8_t dir, const uint8_t* d, size_t n) {
+    if (!gRawRec || !gRec || n == 0 || n > 512) return;
+    size_t need = 7 + n;
+    portENTER_CRITICAL(&gRawMux);
+    if (gRawQLen + need <= sizeof(gRawQ)) {
+        uint32_t t = millis() - gRawT0;
+        uint8_t* p = gRawQ + gRawQLen;
+        memcpy(p, &t, 4); p[4] = dir; p[5] = n & 0xFF; p[6] = n >> 8;
+        memcpy(p + 7, d, n);
+        gRawQLen += need;
+    } else gRawDropped += n;
+    portEXIT_CRITICAL(&gRawMux);
+}
+
+static const char B64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+static int b64enc(const uint8_t* in, int n, char* out) {
+    int o = 0;
+    for (int i = 0; i < n; i += 3) {
+        int r = n - i;
+        uint32_t v = in[i] << 16 | (r > 1 ? in[i+1] << 8 : 0) | (r > 2 ? in[i+2] : 0);
+        out[o++] = B64[(v >> 18) & 63];
+        out[o++] = B64[(v >> 12) & 63];
+        out[o++] = r > 1 ? B64[(v >> 6) & 63] : '=';
+        out[o++] = r > 2 ? B64[v & 63]        : '=';
+    }
+    out[o] = '\0';
+    return o;
+}
+
+static void rawPath(char* out, size_t n) { snprintf(out, n, "/sessions/%s_raw.jsonl", gSessName); }
+
+static void rawWriteMeta() {
+    if (!gRawRec || !gSdOk) return;
+    gRawT0 = millis();
+    char path[64]; rawPath(path, sizeof(path));
+    File f = SD.open(path, FILE_WRITE);
+    if (!f) return;
+    f.printf("{\"t\":0,\"kind\":\"meta\",\"version\":1,\"deviceName\":\"%s\",\"deviceId\":\"%s\","
+             "\"sessionKind\":\"board\",\"pollIntervalMs\":%d,\"canId\":%d,\"source\":\"cardputer\"}\n",
+             gProfile.name, gTargetAddress.toString().c_str(), 40, gCanId);
+    f.printf("{\"t\":1,\"kind\":\"session-state\",\"status\":\"recording-started\"}\n");
+    f.close();
+    gRawChunks = 0; gRawBytes = 0; gRawDropped = 0;
+}
+
+// Drain the queue to the card. One open per flush, not per chunk.
+static void rawPump() {
+    if (!gRawRec || !gRec || !gSdOk || gRawQLen == 0) return;
+    static uint8_t buf[2048];
+    uint16_t n;
+    portENTER_CRITICAL(&gRawMux);
+    n = gRawQLen; if (n > sizeof(buf)) n = sizeof(buf);
+    // only take whole records
+    uint16_t used = 0;
+    while (used < n) {
+        uint16_t rl; memcpy(&rl, gRawQ + used + 5, 2);
+        if (used + 7 + rl > n) break;
+        used += 7 + rl;
+    }
+    memcpy(buf, gRawQ, used);
+    gRawQLen -= used;
+    if (gRawQLen) memmove(gRawQ, gRawQ + used, gRawQLen);
+    portEXIT_CRITICAL(&gRawMux);
+    if (used == 0) return;
+
+    char path[64]; rawPath(path, sizeof(path));
+    File f = SD.open(path, FILE_APPEND);
+    if (!f) return;
+    static char b64[700];
+    uint16_t i = 0;
+    while (i < used) {
+        uint32_t t; memcpy(&t, buf + i, 4);
+        uint8_t dir = buf[i+4];
+        uint16_t rl; memcpy(&rl, buf + i + 5, 2);
+        b64enc(buf + i + 7, rl, b64);
+        f.printf("{\"t\":%lu,\"kind\":\"ble-chunk\",\"direction\":\"%s\",\"base64\":\"%s\"}\n",
+                 (unsigned long)t, dir ? "tx" : "rx", b64);
+        gRawChunks++; gRawBytes += rl;
+        i += 7 + rl;
+    }
+    f.close();
+}
+
+// GPS goes in as its own line so a replay can drive the map without the CSV.
+static void rawWriteLocation() {
+    if (!gRawRec || !gRec || !gSdOk || !gGps.fix) return;
+    char path[64]; rawPath(path, sizeof(path));
+    File f = SD.open(path, FILE_APPEND);
+    if (!f) return;
+    f.printf("{\"t\":%lu,\"kind\":\"location\",\"latitude\":%.7f,\"longitude\":%.7f,"
+             "\"speedMps\":%.2f,\"altitudeM\":%.1f,\"sats\":%d}\n",
+             (unsigned long)(millis() - gRawT0), gGps.lat, gGps.lon,
+             gGps.spd_kmh / 3.6f, gGps.alt, gGps.sats);
+    f.close();
+}
+
+static void rawWriteMarker(const char* type) {
+    if (!gRawRec || !gRec || !gSdOk) return;
+    char path[64]; rawPath(path, sizeof(path));
+    File f = SD.open(path, FILE_APPEND);
+    if (!f) return;
+    f.printf("{\"t\":%lu,\"kind\":\"marker\",\"type\":\"%s\"}\n",
+             (unsigned long)(millis() - gRawT0), type);
+    f.close();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -658,7 +818,17 @@ static void parseAllData(const uint8_t* p, int len) {
     gV.remote_tilt = ((int)p[19] - 128) / 5.f;
     gV.pitch       = rdI16(p, 20) / 10.f;
     gV.booster     = (int)p[22] - 128;
-    if (len > 34) { int f = p[34]; gV.foc_id = (f == 222) ? 0 : f / 3.f; }
+    // Mode is readable from the payload itself: mode 1 stops at 34 bytes, mode 2
+    // carries the extra block. Only foc_id lives up there for us — temps and the
+    // odometer come from GET_VALUES / GET_VALUES_SETUP, so mode 1 costs us nothing
+    // else. Carry foc_id forward between mode 2 samples and record which is which,
+    // rather than letting a stale value pass for a fresh one.
+    if (len > 34) {
+        int f = p[34]; gV.foc_id = (f == 222) ? 0 : f / 3.f;
+        gAllMode = 2; gLastMode2Rx = millis();
+    } else {
+        gAllMode = 1;                     // gV.foc_id keeps its last mode-2 value
+    }
     gV.refloat     = true;
     gLastAllRx     = millis();           // fresh footpad/Refloat data arrived
 }
@@ -724,6 +894,7 @@ static void vescSendRawCmd(uint8_t cmd) {
     uint8_t pkt[12], pay[1] = { cmd };
     int len = buildPkt(pkt, pay, 1);
     gTxCount++;
+    rawQueue(1, pkt, len);
     gCharRx->writeValue(pkt, len, !gUseWriteNoResp);
 }
 
@@ -736,6 +907,7 @@ static void vescSendImu() {
     pay[plen++] = 0x01; pay[plen++] = 0xFF;          // field mask
     uint8_t pkt[16]; int len = buildPkt(pkt, pay, plen);
     gTxCount++;
+    rawQueue(1, pkt, len);
     gCharRx->writeValue(pkt, len, !gUseWriteNoResp);
 }
 
@@ -850,6 +1022,7 @@ static void saveProfileToSD() {
     f.printf("  \"batt_min_v\": %.2f,\n",          gProfile.batt_min_v);
     f.printf("  \"batt_nom_v\": %.2f,\n",          gProfile.batt_nom_v);
     f.printf("  \"batt_cap_ah\": %.2f,\n",         gProfile.batt_cap_ah);
+    f.printf("  \"pack_ir_mohm\": %.1f,\n",        gProfile.pack_ir_mohm);
     f.printf("  \"tiltback_duty\": %.1f,\n",       gProfile.tiltback_duty);
     f.printf("  \"motor_poles\": %d,\n",           gProfile.motor_poles);
     f.printf("  \"wheel_mm\": %.1f\n",             gProfile.wheel_mm);
@@ -875,6 +1048,8 @@ static void loadProfileFromSD() {
         if (fv > 0) gProfile.tiltback_duty = fv;
         fv = jFloat(line, "batt_cap_ah");
         if (fv >= 0) gProfile.batt_cap_ah = fv;
+        fv = jFloat(line, "pack_ir_mohm");
+        if (fv >= 0 && fv < 2000) gProfile.pack_ir_mohm = fv;   // 0 disables IR correction
         fv = jFloat(line, "motor_poles");
         if (fv > 0) gProfile.motor_poles = (int)fv;
         fv = jFloat(line, "wheel_mm");
@@ -957,6 +1132,9 @@ static void notifyCallback(NimBLERemoteCharacteristic*, uint8_t* data,
         if (len > 12) Serial.printf(" ...(+%d)", (int)(len - 12));
         Serial.println();
     }
+    // Tap BEFORE reassembly — this is the transport seam, so replaying these
+    // chunks exercises framing, CRC and parsers exactly as a live board does.
+    rawQueue(0, data, len);
     if (gAccLen + len > sizeof(gAcc)) gAccLen = 0;       // overflow guard
     memcpy(gAcc + gAccLen, data, len);
     gAccLen += (uint16_t)len;
@@ -1286,12 +1464,18 @@ static void csvWriteHeader() {
     // the controller is mounted (GAD sits rotated 180 deg).
     // event: empty on normal rows, "KICK" on the row where [K] was pressed.
     f.print(",pitch_rate_dps,event");
+    // alldata_mode: which Refloat payload the latest sample came from (1 or 2).
+    // focid_age_ms: how old foc_id really is — it only refreshes on mode 2, so
+    // without this a carried-forward value looks identical to a fresh one. Same
+    // reasoning as val_age_ms; stale data is marked, never silently passed on.
+    f.print(",alldata_mode,focid_age_ms");
     f.println();
     f.close();
 }
 
 static void csvAppend() {
     if (!gSdOk || !gRec || !gV.valid) return;
+    if (gIdlePaused) return;            // parked: the gap is marked in the .jsonl
     char path[64]; snprintf(path, sizeof(path), "/sessions/%s.csv", gSessName);
     File f = SD.open(path, FILE_APPEND);
     if (!f) return;
@@ -1343,7 +1527,10 @@ static void csvAppend() {
         if (dt > 0.005f && dt < 1.0f) rate = (gV.pitch - prevPitch) / dt;
     }
     prevPitch = gV.pitch; prevMs = nowMs;
-    f.printf(",%.1f,%s", rate, gKickMark ? "KICK" : "");
+    uint32_t fa2 = gLastMode2Rx ? (nowMs - gLastMode2Rx) : 99999;
+    if (fa2 > 99999) fa2 = 99999;
+    f.printf(",%.1f,%s,%d,%lu", rate, gKickMark ? "KICK" : "",
+             gAllMode, (unsigned long)fa2);
     gKickMark = false;                      // one row per press
     f.println();
     f.close();
@@ -1358,6 +1545,7 @@ static void startSession() {
     gTripMs = millis();
     gKickCount = 0; gKickMark = false; gFaultCapCount = 0;   // per-session counters
     csvWriteHeader();
+    rawWriteMeta();          // opens session_NNN_raw.jsonl and stamps t=0
     // raw config snapshots for this session (captured at connect) — the full
     // untruncated blobs hold every mcconf/appconf field for later decoding.
     if (gMcconfRawLen > 0) {
@@ -1375,8 +1563,12 @@ static void startSession() {
 }
 static void stopSession() {
     if (!gRec) return;
+    rawPump();                                   // flush whatever is still queued
+    rawWriteMarker("recording-stopped");
+    Serial.printf("[LOG] stop %s  raw: %lu chunks / %lu B / dropped %lu\n",
+                  gSessName, (unsigned long)gRawChunks, (unsigned long)gRawBytes,
+                  (unsigned long)gRawDropped);
     gRec = false;
-    Serial.printf("[LOG] stop %s\n", gSessName);
 }
 
 // logChange() removed — READ-ONLY mode
@@ -1513,8 +1705,17 @@ static float batterySoc() {
         vmin = gProfile.batt_min_v; vmax = gProfile.batt_max_v;
     }
     float pv = packVoltage();   // prefers BMS cell-sum over charger-inflated v_in
-    if ((gV.valid || gBms.valid) && pv > 1.f)
+    if ((gV.valid || gBms.valid) && pv > 1.f) {
+        // Undo sag before reading the curve: V_corr = V + I_batt * R_pack.
+        // Under load the pack reads low purely because of its own resistance, and
+        // a raw reading makes the battery look like it is collapsing on every hill.
+        // We measured this pack's R directly from a fault capture, so it is not a
+        // guess. Idea from VESCape ADR-0011; the arithmetic is one line.
+        // The RAW voltage stays untouched everywhere else — this only shifts the %.
+        if (gProfile.pack_ir_mohm > 0.f && gV.valid)
+            pv += gV.curr_in * (gProfile.pack_ir_mohm / 1000.f);
         return constrain((pv - vmin) / (vmax - vmin), 0.f, 1.f);
+    }
     if (gV.setup && gV.batt_pct > 0)
         return constrain(gV.batt_pct / 100.f, 0.f, 1.f);
     return -1.f;
@@ -1967,6 +2168,13 @@ static void handleKeys() {
         if (gScreen == 3 && c == 'f' && !gFaultCapturing) {
             gFaultCapCount++;
             vescRequestFaults();
+        }
+        // [J] — raw BLE recording on/off. ~6 KB/s of card, so it is a choice, but
+        // it is the only thing that lets a ride be re-analysed without riding again.
+        if (c == 'j') {
+            gRawRec = !gRawRec;
+            Serial.printf("[RAW] recording %s\n", gRawRec ? "ON" : "OFF");
+            if (gRawRec && gRec) rawWriteMeta();   // start a fresh file mid-session
         }
 
         // BACKUP/RESTORE (5) — [B] create backup, cursor to pick a restore point
@@ -3189,7 +3397,11 @@ void loop() {
     // stale during fast events (the burnout case where adc looked frozen).
     if (gBleOk && now - gLastAllMs >= 83) {
         gLastAllMs = now;
-        vescSendAllData();
+        // Mode 1 by default; mode 2 about once a second just to refresh foc_id.
+        // Asking for the heavier payload on every poll is what starved this feed.
+        bool want2 = (now - gLastMode2Req >= 1000);
+        if (want2) gLastMode2Req = now;
+        vescSendAllData(want2 ? 2 : 1);
     }
     // Poll Smart BMS values @1Hz — try both the CAN-forwarded motor controller
     // and the ESP32 bridge directly (depending on which one aggregates the BMS).
@@ -3218,6 +3430,31 @@ void loop() {
         }
         gFaultPrev = gV.fault;
     }
+    // ── Idle pause ──────────────────────────────────────────────────────────
+    // A board left connected while parked keeps polling and keeps writing rows.
+    // session_019 is the cautionary example: a long stationary tail and zero
+    // distance. Slow to pause, instant to resume, so traffic lights don't flap.
+    // Idea from VESCape ADR-0021.
+    if (gRec && gV.valid) {
+        static uint32_t lastMovingMs = 0;
+        if (gV.speed_kmh >= 1.0f) {
+            lastMovingMs = now;
+            if (gIdlePaused) { gIdlePaused = false; rawWriteMarker("idle-resume");
+                               Serial.println("[IDLE] resume"); }
+        } else if (!gIdlePaused && lastMovingMs && now - lastMovingMs > 30000) {
+            gIdlePaused = true; rawWriteMarker("auto_pause");
+            Serial.println("[IDLE] paused - parked >30s");
+        }
+    } else gIdlePaused = false;
+
+    // Drain the raw-BLE queue to the card (never from the BLE callback).
+    rawPump();
+    { static uint32_t lastGpsRaw = 0;            // GPS line ~1 Hz, it is not telemetry
+      if (gGps.fix && now - lastGpsRaw >= 1000) { lastGpsRaw = now; rawWriteLocation(); } }
+    { static uint32_t shown = 0, lastWarn = 0;   // the recorder must never lose bytes
+      if (gRawDropped != shown && now - lastWarn > 2000) { lastWarn = now; shown = gRawDropped;
+          Serial.printf("[RAW] WARNING dropped %lu bytes\n", (unsigned long)gRawDropped); } }
+
     // Close the capture once the board stops sending lines (or it never answered).
     if (gFaultCapturing && now - gFaultCapStart > 900) {
         gFaultCapturing = false;
