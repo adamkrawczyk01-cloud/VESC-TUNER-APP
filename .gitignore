@@ -36,6 +36,11 @@ SD /
 # but DO ship decoded-config blobs for the web app
 !web/rides/*.bin
 
+# Session handoff notes. Written as a private working document — it carries rider
+# details (weight, riding habits) that belong in analysis, not in a public repo.
+# Lives in ~/vesc-tuner-private/ instead.
+HANDOFF.md
+
 # Third-party VESCape app source — local reference only (GPL-3.0, upstream repo),
 # not ours to publish. We took ideas and the .jsonl line format, never code.
 vescape-dev/
