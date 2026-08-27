@@ -2378,6 +2378,11 @@ static void drawRide() {
     if (gRec) canvas.fillCircle(DW - 36, 6, 2, C_RED);
     canvas.fillRoundRect(DW - 68, 1, 28, 10, 2, gRec ? C_RED : C_VOLT);
     canvas.setTextDatum(TL_DATUM); canvas.setTextColor(C_BG); canvas.drawString(gRec ? "REC" : "RIDE", DW - 65, 2);
+    // Raw capture and idle pause both change what ends up on the card, so they
+    // belong on screen — [J] used to report only over serial, which is no use
+    // while riding. PAUSE wins the slot because it explains a gap in the log.
+    if (gRec && gIdlePaused)      { canvas.setTextColor(C_WARN);  canvas.drawString("PAUSE", 152, 2); }
+    else if (gRawRec)             { canvas.setTextColor(gRec ? C_OK : C_DGREY); canvas.drawString("RAW", 152, 2); }
 
     // [K] acknowledgement — you press this while riding and cannot study the screen,
     // so it has to be unmissable and it has to confirm the count went up.
