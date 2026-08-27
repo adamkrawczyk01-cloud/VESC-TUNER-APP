@@ -75,6 +75,26 @@
 #define CMD_BMS_GET_VALUES    96 // 0x60 — Smart BMS values (incl. temperatures)
 #define CMD_GET_VALUES_SETUP  47 // 0x2F — battery %, odometer, totals summed over CAN
 #define CMD_GET_IMU_DATA      65 // 0x41 — raw IMU (accel/gyro/yaw)
+#define CMD_TERMINAL_CMD      20 // 0x14 — text console. READ-ONLY HERE: see below.
+#define CMD_PRINT             21 // 0x15 — text reply, one packet per printf line
+
+// ⚠️ COMM_TERMINAL_CMD is a general console channel. The SAME channel also carries
+// commands that would be dangerous while riding — verified in surfdado/bldc
+// terminal.c on the branch this board runs:
+//   rebootwdt              chSysLock(); for(;;){__NOP();}  — deliberately hangs the
+//                          CPU so the watchdog resets the controller. Instant loss
+//                          of the balancing loop.
+//   motor_disable          mc_interface_disable(). Refuses only while the wheel is
+//                          spinning, so standing still on the board it can succeed.
+//   rotor_lock_openloop    forces current at a fixed angle.
+//   foc_encoder_detect, foc_detect_apply_all, measure_res/ind/linkage, hall_analyze,
+//   foc_openloop*          all spin the motor and/or overwrite mcconf.
+// Therefore this firmware has NO free-text terminal, NO command menu and NO
+// whitelist that someone could extend later. There is exactly one compile-time
+// literal below and it is the only string that can ever reach that channel.
+// "faults" is a pure read: terminal.c only commands_printf()s the stored
+// fault_vec[] array — no writes, no motor action, no config touched.
+static const char TERM_CMD_FAULTS[] = "faults";
 
 // ── Display dimensions ───────────────────────────────────────────────────────
 #define DW 240
@@ -495,6 +515,79 @@ static void vescSendCustomCfg() {
     uint8_t pkt[16]; int len = buildPkt(pkt, pay, plen);
     gTxCount++;
     gCharRx->writeValue(pkt, len, !gUseWriteNoResp);
+}
+
+// ── Fault dump capture (read-only) ───────────────────────────────────────────
+// The controller records every fault into fault_vec[] with the values sampled AT
+// the moment it tripped — instantaneous current, filtered current, duty and rpm.
+// GET_VALUES polling can never see that: the abs-overcurrent transient we are
+// chasing rises in ~400 us and we poll every 40 ms. Asking the board for its own
+// record is the only way to get those numbers, so grab them automatically instead
+// of screenshotting the phone.
+static char     gFaultDump[3072];        // raw text, newest capture
+static uint16_t gFaultDumpLen = 0;
+static bool     gFaultCapturing = false; // COMM_PRINT lines are being collected
+static uint32_t gFaultCapStart  = 0;     // millis() when we asked
+static uint32_t gFaultCapCount  = 0;     // dumps captured this session
+static uint8_t  gFaultPrev      = 0;     // for edge detection on gV.fault
+static bool     gKickMark       = false; // [K] pressed — stamp the next CSV row
+static uint32_t gKickCount      = 0;     // kicks marked this session
+static uint32_t gKickFlashMs    = 0;     // millis() of the press, for the on-screen ack
+// parsed headline values of the LAST entry in the dump (for screen [4])
+static float gFdCurrent = 0, gFdCurrFilt = 0, gFdDuty = 0, gFdRpm = 0, gFdVolt = 0, gFdTemp = 0;
+static char  gFdName[32] = "";
+static bool  gFdValid = false;
+
+// Send the one and only console command this firmware knows. Takes no argument by
+// design — there is nothing to pass, so nothing can be injected. See the comment at
+// TERM_CMD_FAULTS for why that matters.
+static void vescRequestFaults() {
+    if (!gCharRx || !gBleOk) return;
+    uint8_t pay[24]; int plen = 0;
+    if (gCanId >= 0) { pay[plen++] = CMD_FORWARD_CAN; pay[plen++] = (uint8_t)gCanId; }
+    pay[plen++] = CMD_TERMINAL_CMD;
+    // string only — the firmware appends the terminator itself (commands.c: data[len]='\0')
+    memcpy(pay + plen, TERM_CMD_FAULTS, sizeof(TERM_CMD_FAULTS) - 1);
+    plen += sizeof(TERM_CMD_FAULTS) - 1;
+    uint8_t pkt[40]; int len = buildPkt(pkt, pay, plen);
+    gTxCount++;
+    gFaultDumpLen = 0; gFaultCapturing = true; gFaultCapStart = millis();
+    gCharRx->writeValue(pkt, len, !gUseWriteNoResp);
+    Serial.printf("[FAULTDUMP] asked for \"%s\"\n", TERM_CMD_FAULTS);
+}
+
+// Pull the headline numbers out of the collected text. The dump lists every fault
+// since startup, so scan to the end and keep the LAST occurrence of each field —
+// that is the event that just happened.
+static void faultDumpParse() {
+    const char* keys[] = {"Fault            : ", "Current          : ", "Current filtered : ",
+                          "Voltage          : ", "Duty             : ", "RPM              : ",
+                          "Temperature      : "};
+    float* dst[] = {nullptr, &gFdCurrent, &gFdCurrFilt, &gFdVolt, &gFdDuty, &gFdRpm, &gFdTemp};
+    gFaultDump[gFaultDumpLen] = '\0';
+    for (int k = 0; k < 7; k++) {
+        const char* last = nullptr; const char* p = gFaultDump;
+        while ((p = strstr(p, keys[k])) != nullptr) { last = p + strlen(keys[k]); p += strlen(keys[k]); }
+        if (!last) continue;
+        if (k == 0) { int i = 0; while (last[i] && last[i] != '\n' && last[i] != '\r' && i < 31) { gFdName[i] = last[i]; i++; } gFdName[i] = '\0'; }
+        else *dst[k] = atof(last);
+    }
+    gFdValid = (gFdName[0] != '\0');
+}
+
+static void faultDumpSave() {
+    if (!gSdOk || gFaultDumpLen == 0) return;
+    char path[64];
+    if (gRec) snprintf(path, sizeof(path), "/sessions/%s_faults.txt", gSessName);
+    else      snprintf(path, sizeof(path), "/sessions/faults_unlogged.txt");
+    File f = SD.open(path, FILE_APPEND);
+    if (!f) return;
+    f.printf("\n===== capture #%lu  ts_ms=%lu  =====\n",
+             (unsigned long)gFaultCapCount, (unsigned long)millis());
+    f.write((const uint8_t*)gFaultDump, gFaultDumpLen);
+    f.println();
+    f.close();
+    Serial.printf("[FAULTDUMP] %u B -> %s\n", gFaultDumpLen, path);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1187,6 +1280,12 @@ static void csvWriteHeader() {
     for (int i = 1; i <= 6;  i++) f.printf(",bms_temp_%02d", i);
     f.print(",gps_lat,gps_lon,altitude_m,gps_spd_kmh,gps_sats");
     f.print(",val_age_ms,fp_age_ms");   // ms since last FRESH values / footpad data (staleness)
+    // pitch_rate: Refloat's rate term is -pitch_rate * kp2, so it is the quantity that
+    // actually commands current while the board is being rocked. Differentiated here
+    // rather than taken from the gyro, because which gyro axis is pitch depends on how
+    // the controller is mounted (GAD sits rotated 180 deg).
+    // event: empty on normal rows, "KICK" on the row where [K] was pressed.
+    f.print(",pitch_rate_dps,event");
     f.println();
     f.close();
 }
@@ -1231,6 +1330,21 @@ static void csvAppend() {
     uint32_t fa = gLastAllRx ? (millis() - gLastAllRx) : 9999;
     if (va > 9999) va = 9999;  if (fa > 9999) fa = 9999;
     f.printf(",%lu,%lu", (unsigned long)va, (unsigned long)fa);   // staleness markers
+
+    // pitch rate from consecutive samples. Rocking is ~1-2 Hz, so 25 Hz sampling
+    // resolves it fine — this is not trying to catch the current transient, which
+    // is ~400 us and unreachable over BLE at any poll rate.
+    static float    prevPitch = 0;
+    static uint32_t prevMs    = 0;
+    uint32_t nowMs = millis();
+    float rate = 0;
+    if (prevMs && nowMs > prevMs) {
+        float dt = (nowMs - prevMs) / 1000.f;
+        if (dt > 0.005f && dt < 1.0f) rate = (gV.pitch - prevPitch) / dt;
+    }
+    prevPitch = gV.pitch; prevMs = nowMs;
+    f.printf(",%.1f,%s", rate, gKickMark ? "KICK" : "");
+    gKickMark = false;                      // one row per press
     f.println();
     f.close();
 }
@@ -1242,6 +1356,7 @@ static void startSession() {
     memset(&gStat, 0, sizeof(gStat));
     gStat.min_volt = 100.f; gStat.start_ah = -1.f;
     gTripMs = millis();
+    gKickCount = 0; gKickMark = false; gFaultCapCount = 0;   // per-session counters
     csvWriteHeader();
     // raw config snapshots for this session (captured at connect) — the full
     // untruncated blobs hold every mcconf/appconf field for later decoding.
@@ -1838,6 +1953,22 @@ static void handleKeys() {
             else      { startSession(); }
         }
 
+        // [K] — mark a kick, from ANY screen (you feel it while riding on screen 0).
+        // Most kicks never trip the 225 A limit, so the fault log only ever shows the
+        // loudest ones. This stamps the quiet ones too, which is the population we
+        // are missing when trying to measure whether a change actually helped.
+        if (c == 'k') {
+            gKickMark = true;                       // next CSV row carries it
+            gKickCount++;
+            gKickFlashMs = millis();
+        }
+        // [F] — re-read the board's fault log on demand (same single hardcoded
+        // command as the automatic capture; nothing else can be sent).
+        if (gScreen == 3 && c == 'f' && !gFaultCapturing) {
+            gFaultCapCount++;
+            vescRequestFaults();
+        }
+
         // BACKUP/RESTORE (5) — [B] create backup, cursor to pick a restore point
         if (gScreen == 5) {
             if (c == 'b') doBackup();
@@ -2032,6 +2163,16 @@ static void drawRide() {
     canvas.fillRoundRect(DW - 68, 1, 28, 10, 2, gRec ? C_RED : C_VOLT);
     canvas.setTextDatum(TL_DATUM); canvas.setTextColor(C_BG); canvas.drawString(gRec ? "REC" : "RIDE", DW - 65, 2);
 
+    // [K] acknowledgement — you press this while riding and cannot study the screen,
+    // so it has to be unmissable and it has to confirm the count went up.
+    if (gKickFlashMs && millis() - gKickFlashMs < 1500) {
+        canvas.fillRoundRect(DW / 2 - 44, 16, 88, 20, 3, C_RED);
+        char km[20]; snprintf(km, sizeof(km), "KICK %lu", (unsigned long)gKickCount);
+        canvas.setTextDatum(MC_DATUM); canvas.setTextColor(C_WHITE); canvas.setTextSize(2);
+        canvas.drawString(km, DW / 2, 26);
+        canvas.setTextSize(1); canvas.setTextDatum(TL_DATUM);
+    }
+
     float spd = gV.valid ? gV.speed_kmh : 0, duty = gV.valid ? gV.duty_pct : 0;
     char v[12];
     snprintf(v, sizeof(v), "%d", (int)spd);
@@ -2189,20 +2330,64 @@ static const char* faultName(uint8_t f) {
 static void drawFault() {
     bool f = (gV.fault != 0);
     canvas.fillScreen(f ? 0x2000 : C_BG);
-    uiStatBar("FAULT MONITOR", f ? "FAULT" : "OK", f ? C_RED : C_OK, "");
-    canvas.setTextDatum(MC_DATUM);
-    if (f) {
-        canvas.setTextColor(C_RED); canvas.setTextSize(3); canvas.drawString("!", DW / 2, 40);
-        canvas.setTextSize(2); canvas.setTextColor(C_WHITE); canvas.drawString(faultName(gV.fault), DW / 2, 72);
-        char c[20]; snprintf(c, sizeof(c), "MC FAULT  CODE %d", gV.fault);
-        canvas.setTextSize(1); canvas.setTextColor(C_RED); canvas.drawString(c, DW / 2, 92);
-        canvas.setTextColor(C_DGREY); canvas.drawString("recorded to session log", DW / 2, 108);
+    char cnt[16]; snprintf(cnt, sizeof(cnt), "dumps %lu", (unsigned long)gFaultCapCount);
+    uiStatBar("FAULT MONITOR", f ? "FAULT" : "OK", f ? C_RED : C_OK, cnt);
+
+    // The captured dump is the point of this screen: the peak/filtered ratio and
+    // duty-at-rpm are what distinguish a real transient from ordinary load, and
+    // they only exist in the board's own fault record.
+    if (gFdValid) {
+        canvas.setTextDatum(TL_DATUM); canvas.setTextSize(1);
+        canvas.setTextColor(C_WHITE);
+        canvas.drawString(gFdName, 6, 24);
+
+        char l[40];
+        float ratio = (fabsf(gFdCurrFilt) > 0.5f) ? fabsf(gFdCurrent / gFdCurrFilt) : 0.f;
+        canvas.setTextColor(C_GREY);  canvas.drawString("peak",     6,  40);
+        canvas.setTextColor(C_RED);   snprintf(l, sizeof(l), "%.1f A", gFdCurrent);
+        canvas.drawString(l, 52, 40);
+        canvas.setTextColor(C_GREY);  canvas.drawString("filt",   120,  40);
+        canvas.setTextColor(C_WHITE); snprintf(l, sizeof(l), "%.1f A", gFdCurrFilt);
+        canvas.drawString(l, 156, 40);
+
+        canvas.setTextColor(C_GREY);  canvas.drawString("ratio",    6,  56);
+        canvas.setTextColor(ratio >= 3.f ? C_RED : C_WARN);
+        snprintf(l, sizeof(l), "%.1fx", ratio); canvas.drawString(l, 52, 56);
+        canvas.setTextColor(C_GREY);  canvas.drawString("duty",   120,  56);
+        canvas.setTextColor(C_WHITE); snprintf(l, sizeof(l), "%.3f", gFdDuty);
+        canvas.drawString(l, 156, 56);
+
+        canvas.setTextColor(C_GREY);  canvas.drawString("rpm",      6,  72);
+        canvas.setTextColor(C_WHITE); snprintf(l, sizeof(l), "%.0f", gFdRpm);
+        canvas.drawString(l, 52, 72);
+        canvas.setTextColor(C_GREY);  canvas.drawString("volt",   120,  72);
+        canvas.setTextColor(C_WHITE); snprintf(l, sizeof(l), "%.2f V", gFdVolt);
+        canvas.drawString(l, 156, 72);
+
+        canvas.setTextColor(C_GREY);  canvas.drawString("temp",     6,  88);
+        canvas.setTextColor(C_WHITE); snprintf(l, sizeof(l), "%.1f C", gFdTemp);
+        canvas.drawString(l, 52, 88);
+
+        canvas.setTextColor(C_DGREY);
+        canvas.drawString(gFaultCapturing ? "reading board..." : "saved to _faults.txt", 6, 106);
+        canvas.drawString("[F] re-read   [K] mark kick", 6, 120);
     } else {
-        canvas.setTextColor(C_OK); canvas.setTextSize(2); canvas.drawString("NO FAULT", DW / 2, 55);
-        canvas.setTextSize(1); canvas.setTextColor(C_GREY); canvas.drawString("system nominal", DW / 2, 80);
-        if (gV.refloat && gV.state >= 6 && gV.state <= 13) {
-            canvas.setTextColor(C_WARN); canvas.drawString(refloatStateName(gV.state), DW / 2, 98);
+        canvas.setTextDatum(MC_DATUM);
+        if (f) {
+            canvas.setTextColor(C_RED); canvas.setTextSize(3); canvas.drawString("!", DW / 2, 40);
+            canvas.setTextSize(2); canvas.setTextColor(C_WHITE); canvas.drawString(faultName(gV.fault), DW / 2, 72);
+            char c[20]; snprintf(c, sizeof(c), "MC FAULT  CODE %d", gV.fault);
+            canvas.setTextSize(1); canvas.setTextColor(C_RED); canvas.drawString(c, DW / 2, 92);
+        } else {
+            canvas.setTextColor(C_OK); canvas.setTextSize(2); canvas.drawString("NO FAULT", DW / 2, 50);
+            canvas.setTextSize(1); canvas.setTextColor(C_GREY); canvas.drawString("system nominal", DW / 2, 72);
+            if (gV.refloat && gV.state >= 6 && gV.state <= 13) {
+                canvas.setTextColor(C_WARN); canvas.drawString(refloatStateName(gV.state), DW / 2, 88);
+            }
         }
+        canvas.setTextDatum(TL_DATUM); canvas.setTextSize(1);
+        canvas.setTextColor(C_DGREY);
+        canvas.drawString(gFaultCapturing ? "reading board..." : "[F] read fault log   [K] mark kick", 6, 120);
     }
     canvas.setTextDatum(TL_DATUM); canvas.setTextSize(1);
 }
@@ -3023,6 +3208,23 @@ void loop() {
         vescSendImu();
     }
 
+    // ── Fault dump: ask the board for its own record the moment a fault appears ──
+    // Edge-triggered on 0 -> non-zero so one event = one capture, no repeat spam
+    // while the fault stays latched.
+    if (gBleOk && gV.valid) {
+        if (gV.fault != 0 && gFaultPrev == 0 && !gFaultCapturing) {
+            gFaultCapCount++;
+            vescRequestFaults();
+        }
+        gFaultPrev = gV.fault;
+    }
+    // Close the capture once the board stops sending lines (or it never answered).
+    if (gFaultCapturing && now - gFaultCapStart > 900) {
+        gFaultCapturing = false;
+        if (gFaultDumpLen > 0) { faultDumpParse(); faultDumpSave(); }
+        else Serial.println("[FAULTDUMP] no reply (board may not support terminal over CAN)");
+    }
+
     // Dispatch incoming BLE packet
     if (gRxReady) {
         gRxReady = false;
@@ -3070,6 +3272,20 @@ void loop() {
                     }
                     parseImu(pay, plen);
                     break;
+                case CMD_PRINT: {
+                    // One packet per commands_printf() line. Only collect while a
+                    // capture is open, so stray board chatter can't fill the buffer.
+                    if (!gFaultCapturing) break;
+                    int n = plen - 1;                       // skip the cmd byte
+                    if (n < 0) break;
+                    if (gFaultDumpLen + n + 1 < (int)sizeof(gFaultDump)) {
+                        memcpy(gFaultDump + gFaultDumpLen, pay + 1, n);
+                        gFaultDumpLen += n;
+                        if (gFaultDumpLen == 0 || gFaultDump[gFaultDumpLen - 1] != '\n')
+                            gFaultDump[gFaultDumpLen++] = '\n';
+                    }
+                    break;
+                }
             }
         }
     }
