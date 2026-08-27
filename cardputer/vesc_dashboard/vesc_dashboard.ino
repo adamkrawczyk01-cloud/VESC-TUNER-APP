@@ -415,9 +415,44 @@ static NimBLEClient*               gBleClient = nullptr;
 static NimBLERemoteCharacteristic* gCharRx    = nullptr;  // write to VESC
 static NimBLERemoteCharacteristic* gCharTx    = nullptr;  // notify from VESC
 
-static uint8_t  gRxBuf[1024];       // one complete reassembled frame (1024 — full mcconf/appconf)
+static uint8_t  gRxBuf[1024];       // frame currently being dispatched
 static uint16_t gRxLen   = 0;
-static volatile bool gRxReady  = false;
+static volatile bool gRxReady  = false;  // legacy flag, kept for the reset paths
+
+// Completed frames waiting for loop() to parse them, as [u16 len][frame] records.
+// Reassembly happens in the BLE callback and can finish several frames at once;
+// parsing stays in loop() so the parsers keep their single-threaded assumptions.
+// Sized for a burst of ordinary replies plus one full mcconf read.
+static uint8_t  gPktQ[4096];
+static volatile uint16_t gPktQLen  = 0;
+static volatile uint32_t gPktDrops = 0;
+static portMUX_TYPE gPktMux = portMUX_INITIALIZER_UNLOCKED;
+
+static void pktQueue(const uint8_t* d, int n) {
+    if (n <= 0 || n > 1024) return;
+    portENTER_CRITICAL(&gPktMux);
+    if (gPktQLen + 2 + n <= (int)sizeof(gPktQ)) {
+        gPktQ[gPktQLen] = n & 0xFF; gPktQ[gPktQLen+1] = n >> 8;
+        memcpy(gPktQ + gPktQLen + 2, d, n);
+        gPktQLen += 2 + n;
+    } else gPktDrops++;
+    portEXIT_CRITICAL(&gPktMux);
+}
+// Pull one frame into gRxBuf. Returns false when the queue is empty.
+static bool pktNext() {
+    bool got = false;
+    portENTER_CRITICAL(&gPktMux);
+    if (gPktQLen >= 2) {
+        uint16_t n = gPktQ[0] | (gPktQ[1] << 8);
+        if (n <= sizeof(gRxBuf) && 2 + n <= gPktQLen) {
+            memcpy(gRxBuf, gPktQ + 2, n); gRxLen = n; got = true;
+            gPktQLen -= 2 + n;
+            if (gPktQLen) memmove(gPktQ, gPktQ + 2 + n, gPktQLen);
+        } else gPktQLen = 0;            // corrupt record — drop the queue
+    }
+    portEXIT_CRITICAL(&gPktMux);
+    return got;
+}
 static uint8_t  gAcc[2048];         // raw BLE chunk accumulator (reassembly across MTU chunks)
 static uint16_t gAccLen  = 0;
 static int      gCanId   = -1;      // motor controller CAN id; -1 = direct/unknown
@@ -831,12 +866,13 @@ static void parseAllData(const uint8_t* p, int len) {
     // odometer come from GET_VALUES / GET_VALUES_SETUP, so mode 1 costs us nothing
     // else. Carry foc_id forward between mode 2 samples and record which is which,
     // rather than letting a stale value pass for a fresh one.
-    if (len > 34) {
-        int f = p[34]; gV.foc_id = (f == 222) ? 0 : f / 3.f;
-        gAllMode = 2; gLastMode2Rx = millis();
-    } else {
-        gAllMode = 1;                     // gV.foc_id keeps its last mode-2 value
-    }
+    // foc_id sits at p[34] in BOTH modes — session 020 settled this: mode 1
+    // replies are 35 bytes, not 34, so the old `len > 34` test labelled every
+    // reply as mode 2. Mode 2 is 42 bytes and only adds distance + temperatures,
+    // which we read from GET_VALUES anyway. So mode 1 costs us nothing at all.
+    if (len > 34) { int f = p[34]; gV.foc_id = (f == 222) ? 0 : f / 3.f; }
+    if (len >= 42) { gAllMode = 2; gLastMode2Rx = millis(); }
+    else           { gAllMode = 1; }
     gV.refloat     = true;
     gLastAllRx     = millis();           // fresh footpad/Refloat data arrived
 }
@@ -1092,7 +1128,7 @@ static void parseFwVersion(const uint8_t* d, int len) {
 }
 
 // Scan the accumulator for complete VESC frames. On a valid frame (CRC + 0x03
-// terminator), copy it into gRxBuf and raise gRxReady, then drop it from gAcc.
+// terminator), push it onto the packet queue, then drop it from gAcc.
 // Handles responses split across multiple BLE MTU chunks (esp. MCCONF ~450B).
 static void reassemblePump() {
     while (gAccLen > 0) {
@@ -1118,11 +1154,14 @@ static void reassemblePump() {
         uint16_t calc = crc16(payload, plen);
         uint16_t got  = ((uint16_t)gAcc[headerLen + plen] << 8) | gAcc[headerLen + plen + 1];
         if (calc == got) {
-            if (total <= (int)sizeof(gRxBuf)) {
-                memcpy(gRxBuf, gAcc, total);
-                gRxLen   = (uint16_t)total;
-                gRxReady = true;
-            }
+            // Queue the frame instead of parking it in a single slot. This used to
+            // be one memcpy into gRxBuf, so when several replies landed between two
+            // loop() passes — which is the normal case at ~33 frames/s — every one
+            // but the last was silently overwritten. Session 020 made it visible:
+            // the board answered GET_VALUES every 90 ms with no gap over 270 ms,
+            // yet the log recorded a median age of 336 ms. The link was never the
+            // problem and neither was Refloat; the packets were dropped here.
+            pktQueue(gAcc, total);
             gAccLen -= total;                            // consume the frame
             memmove(gAcc, gAcc + total, gAccLen);
         } else {                                         // bad CRC → resync
@@ -1153,7 +1192,7 @@ struct ClientCB : public NimBLEClientCallbacks {
     void onConnect(NimBLEClient*)            override { gBleOk = true;  }
     void onDisconnect(NimBLEClient*, int)    override {
         gBleOk = false; gV.valid = false;
-        gCanId = -1; gCanDiscovered = false; gAccLen = 0; gRxReady = false;
+        gCanId = -1; gCanDiscovered = false; gAccLen = 0; gRxReady = false; gPktQLen = 0;
         gRec = false;            // board off → stop & finalize the log
     }
 } gClientCB;
@@ -1336,7 +1375,7 @@ static bool bleConnect(const NimBLEAddress& addr) {
     gUseWriteNoResp = gCharRx->canWriteNoResponse();
 
     // Fresh reassembly + CAN state for this connection
-    gAccLen = 0; gRxReady = false;
+    gAccLen = 0; gRxReady = false; gPktQLen = 0;
     gCanId  = -1; gCanDiscovered = false;
 
     // ── VESC handshake: COMM_FW_VERSION must be first packet ─────────────────
@@ -1345,9 +1384,8 @@ static bool bleConnect(const NimBLEAddress& addr) {
     vescSend(CMD_FW_VERSION);
     unsigned long t0 = millis();
     while (!gFwVer.received && millis() - t0 < 3000) {
-        // Ręczne przepchnięcie gRxReady z ISR context (notifyCallback)
-        if (gRxReady) {
-            gRxReady = false;
+        // Drain whatever the callback queued (frames now go through pktQueue)
+        while (pktNext()) {
             const uint8_t* pay; int plen;
             if (unpackPkt(gRxBuf, gRxLen, &pay, &plen) && pay[0] == CMD_FW_VERSION) {
                 parseFwVersion(pay, plen);
@@ -1368,8 +1406,7 @@ static bool bleConnect(const NimBLEAddress& addr) {
     vescSend(CMD_PING_CAN);                 // raw — handled by the ESP32 bridge
     unsigned long tc = millis();
     while (!gCanDiscovered && millis() - tc < 3500) {
-        if (gRxReady) {
-            gRxReady = false;
+        while (pktNext()) {
             const uint8_t* pay; int plen;
             if (unpackPkt(gRxBuf, gRxLen, &pay, &plen) && pay[0] == CMD_PING_CAN) {
                 if (plen >= 2) gCanId = pay[1];   // first discovered CAN device
@@ -2258,15 +2295,14 @@ static void uiMegaBar(int y, int h, const char* label, float frac, uint16_t fill
     canvas.setTextSize(1); canvas.setTextDatum(TL_DATUM);
 }
 
-// Blocking config read (pumps gRxReady like the handshake). Fills raw buffer + gMC.
+// Blocking config read (drains the packet queue like the handshake). Fills raw buffer + gMC.
 static bool requestConfig(uint8_t cmd, int timeoutMs) {
     if (cmd == CMD_GET_MCCONF) gMcconfRawLen = 0; else gAppconfRawLen = 0;
     gRxReady = false;
     vescSend(cmd);
     unsigned long t0 = millis();
     while (millis() - t0 < (unsigned)timeoutMs) {
-        if (gRxReady) {
-            gRxReady = false;
+        while (pktNext()) {
             const uint8_t* pay; int plen;
             if (unpackPkt(gRxBuf, gRxLen, &pay, &plen)) {
                 if (pay[0] == CMD_GET_MCCONF && plen <= (int)sizeof(gMcconfRaw)) {
@@ -2285,12 +2321,11 @@ static bool requestConfig(uint8_t cmd, int timeoutMs) {
 
 // Blocking Refloat custom-config read (raw package config bytes).
 static bool requestCustomCfg(int timeoutMs) {
-    gCustomCfgRawLen = 0; gRxReady = false;
+    gCustomCfgRawLen = 0; gRxReady = false; gPktQLen = 0;
     vescSendCustomCfg();
     unsigned long t0 = millis();
     while (millis() - t0 < (unsigned)timeoutMs) {
-        if (gRxReady) {
-            gRxReady = false;
+        while (pktNext()) {
             const uint8_t* pay; int plen;
             if (unpackPkt(gRxBuf, gRxLen, &pay, &plen) &&
                 pay[0] == CMD_GET_CUSTOM_CONFIG && plen <= (int)sizeof(gCustomCfgRaw)) {
@@ -3475,8 +3510,10 @@ void loop() {
         else Serial.println("[FAULTDUMP] no reply (board may not support terminal over CAN)");
     }
 
-    // Dispatch incoming BLE packet
-    if (gRxReady) {
+    // Dispatch every frame that arrived, not just the newest one. Draining the
+    // whole queue each pass is the point: replies come in bursts, and taking one
+    // per loop is what threw the rest away.
+    while (pktNext()) {
         gRxReady = false;
         const uint8_t* pay; int plen;
         if (unpackPkt(gRxBuf, gRxLen, &pay, &plen)) {
