@@ -1,8 +1,13 @@
-# VESC AI Tuner for M5Stack Cardputer
+# VESC Tuner — czarna skrzynka dla desek na VESC
 
-Narzędzie do precyzyjnego tuningu kontrolerów VESC na urządzeniu M5Stack Cardputer.
-Loguje telemetrię jazdy, snapshot konfiguracji VESC i generuje bezpieczne sugestie zmian
-z uzasadnieniem opartym na rzeczywistych danych.
+Telemetria i diagnostyka dla onewheeli na VESC (Floatwheel ADV2, Refloat).
+Trzy elementy: **Cardputer** nagrywa jazdę, **HUD na kask** pokazuje ją przed okiem,
+**analizator webowy** pozwala rozbierać ją potem na czynniki pierwsze.
+
+> **Read-only.** Żadne z urządzeń nie potrafi zmienić ustawienia w desce — w kodzie
+> nie istnieje ani jedna komenda zapisu. Wysyłane są wyłącznie `GET_*`, `PING_CAN`
+> i `FW_VERSION`, plus jeden zaszyty na stałe literał `faults` do odczytu rejestru
+> błędów. Strojenie robi się ręcznie w VESC Tool.
 
 ## Credits — VESCape
 
@@ -19,138 +24,140 @@ had already run into the hard way:
 | 0008 sanitizers mark, never delete | the web analyser used to null out "impossible" samples, which destroys evidence you later need |
 | 0021 idle pause | long parked tails bloating the logs |
 
-**No VESCape code was copied.** This repo has no license file and is not
-GPL-licensed, so taking code was never an option. What was taken is the *shape of
+**No VESCape code was copied.** This repo carries no license file and is not
+GPL-licensed, so taking code was never an option. What was reused is the *shape of
 the Debug Recording line format*, reimplemented from its documented layout — with
 the useful side effect that recordings are interchangeable both ways.
-`web/jsonl.js` here opens VESCape's own `replay-thor301.jsonl` fixture, and the
+`web/jsonl.js` opens VESCape's own `replay-thor301.jsonl` fixture, and the
 Cardputer writes the same format.
 
-Their source is kept out of this repo entirely (see `.gitignore`), the same way
-the Refloat firmware source is.
+Their source is kept out of this repo entirely (see `.gitignore`), the same way the
+Refloat firmware source is.
 
-## Architektura
+---
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  M5Stack Cardputer                                          │
-│                                                             │
-│  1. START SESJI:                                            │
-│     COMM_GET_MCCONF (cmd 14) → session_XXX_mcconf.json      │
-│     COMM_GET_APPCONF (cmd 16) → session_XXX_appconf.json    │
-│                                                             │
-│  2. JAZDA:                                                  │
-│     telemetria 12Hz → session_XXX.csv                       │
-│     dashboard: prędkość, duty, V/celę, A, W,               │
-│     temp FET/silnika, pitch angle, bateria, trip            │
-│                                                             │
-│  3. PO SESJI:                                               │
-│     USB mass storage → Mac kopiuje pliki z SD               │
-│     wczytuje suggestions.json → review [Y/N]               │
-│     zaakceptowane zmiany → VESC przez BLE                   │
-│     weryfikacja: GET_MCCONF po każdym SET_MCCONF            │
-└───────────────────┬─────────────────────────────────────────┘
-                    │ SD card (most danych)
-        ┌───────────▼───────────┐      ┌────────────────────┐
-        │  data/sessions/       │      │  data/pev-reference/│
-        │  session_XXX.csv      │      │  tune_benchmarks    │
-        │  session_XXX_mcconf   │      │  float_package_     │
-        │  session_XXX_appconf  │      │    params           │
-        └───────────┬───────────┘      │  safety_limits_20s  │
-                    │                  └────────────┬────────┘
-        ┌───────────▼──────────────────────────────▼────────┐
-        │  Mac + Claude Code                                 │
-        │                                                    │
-        │  analiza CSV + porównanie z aktualnym mcconf       │
-        │  → config/suggestions.json                         │
-        │    (tylko zmiany względem bieżącego configu,       │
-        │     max ±15%, whitelist 5 parametrów)              │
-        └────────────────────────────────────────────────────┘
-```
-
-## Struktura projektu
+## Schemat
 
 ```
-vesc-tuner/
-├── cardputer/              # Kod Arduino (.ino) dla M5Stack Cardputer
-├── config/
-│   └── suggestions.json    # Sugestie zmian VESC (Mac → Cardputer)
-├── data/
-│   ├── sessions/           # Dane sesji (Cardputer → Mac)
-│   │   ├── session_001.csv
-│   │   ├── session_001_mcconf.json
-│   │   └── session_001_appconf.json
-│   └── pev-reference/      # Dane referencyjne z pev.dev
-│       ├── tune_benchmarks.json
-│       ├── float_package_params.json
-│       └── safety_limits_20s.json
-├── analysis/               # Wyniki analizy sesji
-└── README.md
+        ┌──────────────┐   BLE / NUS      ┌─────────────────────────────┐
+        │  DESKA       │◄─────────────────│  M5Stack Cardputer          │
+        │  VESC Express│   tylko GET_*    │  • trzyma link BLE          │
+        │      ↓ CAN   │                  │  • GPS + zapis na SD        │
+        │  ADV500      │                  │  • 11 ekranów, klawiatura   │
+        └──────────────┘                  └──────────┬──────────────────┘
+               ▲                                     │ ESP-NOW 30 Hz
+               │ BLE (gdy nie ma                     ▼
+               │  Cardputera)              ┌─────────────────────────────┐
+               └───────────────────────────│  M5 AtomS3R — HUD na kask   │
+                                           │  • ekranik 128×128          │
+                                           │  • panel LED 16×8           │
+                                           │  • 3 kropki statusu         │
+                                           └─────────────────────────────┘
+                         karta SD
+                            │
+                            ▼
+                 ┌─────────────────────────┐
+                 │  web/  — analizator PWA │
+                 │  CSV · Float Control    │
+                 │  · .jsonl (replay)      │
+                 └─────────────────────────┘
 ```
 
-## Hardware
+**Dwa źródła danych dla HUD.** Gdy Cardputer nadaje — HUD słucha ESP-NOW. Gdy go nie ma —
+łączy się z deską sam po BLE (wybór deski przyciskiem, zapamiętuje wybór). VESC Express
+przyjmuje **jedno** połączenie BLE, więc HUD zwalnia łącze, gdy Cardputer wraca.
 
-- **M5Stack Cardputer** — kompaktowy komputer z klawiaturą, ekranem i czytnikiem SD
-- **VESC** — kontroler silnika elektrycznego (Vedder Electronic Speed Controller)
-- **Bateria 20S** — 72–84V, bezpieczne zakresy pilnowane przez safety_limits_20s.json
-- **Karta SD** — asynchroniczny most danych między Cardputerem a Macem
+---
 
-## Format danych sesji
+## Cardputer — co nagrywa
 
-### CSV telemetrii (12Hz)
-```
-ts_ms,speed_kmh,rpm,voltage_V,curr_in_A,curr_mot_A,duty_pct,temp_fet_C,temp_mot_C,amp_hours,tacho
-```
-
-### session_XXX_mcconf.json
-Pełna konfiguracja silnika odczytana przez `COMM_GET_MCCONF` (cmd 14) na starcie sesji.
-
-### session_XXX_appconf.json
-Konfiguracja aplikacji (Float Package) odczytana przez `COMM_GET_APPCONF` (cmd 16) na starcie sesji.
-
-## Format suggestions.json
-
-```json
-{
-  "session": "session_001",
-  "generated_at": "2026-03-24T10:00:00Z",
-  "suggestions": [
-    {
-      "param": "l_current_max",
-      "current": 80.0,
-      "suggested": 68.0,
-      "delta_pct": -15.0,
-      "reason": "wykryto 5 spike'ow powyzej 80% limitu przez >200ms",
-      "safe": true
-    }
-  ]
-}
-```
-
-### Whitelist parametrów (jedyne dozwolone zmiany)
-| Parametr | Opis |
+| plik | zawartość |
 |---|---|
-| `l_current_max` | Maks. prąd silnika |
-| `l_in_current_max` | Maks. prąd wejściowy (bateria) |
-| `l_max_erpm` | Maks. prędkość obrotowa |
-| `l_temp_fet_start` | Temp. FET — start dławienia |
-| `l_temp_fet_end` | Temp. FET — pełne wyłączenie |
+| `session_NNN.csv` | **87 kolumn**, ~12 Hz — prędkość, prądy, duty, temperatury, pitch/roll, ADC footpadów, IMU, cele BMS, GPS, znaczniki świeżości |
+| `session_NNN_raw.jsonl` | **każdy surowy chunk BLE** (tx i rx) ze znacznikiem czasu — nagranie do odtworzenia |
+| `session_NNN_faults.txt` | zrzuty rejestru błędów prosto z deski (prąd chwilowy, filtrowany, duty, rpm w chwili odcięcia) |
+| `session_NNN_mcconf.bin` / `.json` | konfiguracja silnika przy połączeniu |
+| `session_NNN_appconf.bin` | konfiguracja aplikacji |
+| `session_NNN_refloat.bin` | **strojenie jazdy** (kp, kp2, ki, ATR, tiltback) — surowo, żeby log wiedział, na czym jechał |
 
-**Limit zmiany: ±15% wartości bieżącej naraz.**
+Nagranie startuje samo: przy prędkości > 2 km/h albo gdy Refloat wejdzie w stan RUNNING.
+Postój dłuższy niż 30 s wstrzymuje zapis (marker `auto_pause` w `.jsonl`), ruszenie wznawia
+natychmiast.
 
-## Bezpieczeństwo
+**Klawisze:** `[1]–[9]`, `[0]` ekrany · `[M]` następny · `[R]` nagrywanie ·
+`[K]` **marker kopnięcia** · `[F]` odczyt rejestru błędów · `[J]` nagrywanie surowe on/off ·
+`[P]` skan BLE · `[C]` konfiguracja WiFi
 
-- Żadna zmiana nie trafia do VESC bez jawnej akceptacji [Y] na Cardputerze
-- Po każdym `SET_MCCONF` — auto-weryfikacja przez `GET_MCCONF`
-- Sugestie generowane względem *aktualnego* configu (nie domyślnego) — precyzja bez zgadywania
-- Wartości sandboxowane przez `safety_limits_20s.json` przed wygenerowaniem sugestii
+**Ekrany:** RIDE · DETAIL · TRIP · **FAULT** · CELLS · BACKUP · BOARD · CONFIG · REVIEW ·
+bateria Cardputera · WIFI
 
-## Szybki start
+---
 
-1. Wgraj kod z `cardputer/` na M5Stack Cardputer
-2. Podłącz Cardputer do VESC przez BLE
-3. Jedź — dane logują się automatycznie
-4. Podłącz Cardputer jako USB mass storage do Maca
-5. Skopiuj sesję z SD do `data/sessions/`
-6. Uruchom analizę → sprawdź `config/suggestions.json`
-7. Wróć do Cardputera → przejdź przez review [Y/N]
+## HUD — co pokazuje
+
+Strony przełączane jednym przyciskiem: **SPEED · BATTERY % · BATT V · CELL V · MOTOR °C ·
+BATT °C · CTRL °C · DUTY · GPS**.
+
+**Trzy kropki statusu na dole każdej strony:**
+
+| kropka | kolory |
+|---|---|
+| źródło danych | 🟢 Cardputer ma deskę · 🟡 Cardputer bez deski · 🔵 HUD trzyma deskę sam · 🔴 nic |
+| footpad lewy | 🟢 wciśnięty · 🔴 zwolniony |
+| footpad prawy | 🟢 wciśnięty · 🔴 zwolniony |
+
+**Panel LED 16×8** — cztery słupki: prędkość, duty, bateria, plus ikona alertu
+(przegrzanie, nadprąd, niskie napięcie). Te same słupki animują się falą, gdy HUD szuka deski.
+Bez intro przy starcie — jeśli słupki się ruszają, HUD czegoś szuka.
+
+Automatyczny obrót ekranu i LED-ów o 180° (IMU), potrójne kliknięcie przy prędkości 0
+wraca do wyboru deski.
+
+---
+
+## Analizator webowy (`web/`)
+
+PWA bez frameworka. Otwiera trzy formaty:
+
+- **`session_NNN.csv`** — natywny format Cardputera
+- **CSV z Float Control** — mapowanie kolumn
+- **`.jsonl`** — nagranie surowe, dekodowane z powrotem do pełnego zbioru danych
+
+Ostatni jest najciekawszy: **odtwarza jazdę bez deski.** Chunki BLE przechodzą przez to samo
+składanie ramek i te same parsery co na żywo, więc analizę można powtarzać w nieskończoność
+na tych samych danych.
+
+Sanitizer **znaczy** podejrzane próbki zamiast je kasować (`d.excluded`) — statystyki je
+pomijają, wykresy pokazują surowe. Usuwanie dowodów raz kosztowało dzień śledztwa.
+
+---
+
+## Sprzęt
+
+- **M5Stack Cardputer** — ESP32-S3, klawiatura, ekran, SD, GPS
+- **M5 AtomS3R** — HUD na kask, ekranik ST7735S + 2× panel M5 Puzzle 8×8
+- **Deska** — Floatwheel ADV2 / ADV500, Refloat, mostek VESC Express (BLE→CAN)
+- **Bateria** 20S2P
+
+Wgrywanie: `cardputer/flash.sh [katalog_szkicu] [port]` — flashuje przez esptool
+z `--flash-size detect`, bo `arduino-cli --upload` zostawia nagłówek 4 MB przy tablicy
+partycji 8 MB i urządzenie wpada w pętlę restartów.
+
+---
+
+## Diagnostyka — `data/boards/`
+
+Repo zawiera pełne konfiguracje dwóch desek (ten sam sterownik ADV500, różne silniki):
+jedna jeździ czysto, druga sporadycznie ucina `ABS_OVER_CURRENT` przy ~2 km/h. Katalog
+trzyma XML-e obu, log BMS i dokument konsultacyjny po angielsku
+(`data/boards/GAD/CONSULTATION_2026-08-17.md`) opisujący, co zostało wykluczone pomiarem,
+a co pozostaje otwarte.
+
+## Czego tu NIE ma
+
+- **Zapisu do deski.** Whitelist parametrów i mechanizm sugestii z wcześniejszej wersji
+  projektu nie są podłączone do żadnej ścieżki zapisu — ekran REVIEW tylko wyświetla.
+- **Dekodowania strojenia Refloat.** `session_NNN_refloat.bin` jest zapisywany surowo;
+  offsety wymagają sparowania blobu z eksportem XML, tak jak zrobiono dla limitów mcconf.
+- **Relaya BLE do telefonu.** Był napisany, przeszedł kompilację, nigdy nie trafił na sprzęt
+  — świadomie wstrzymany.
