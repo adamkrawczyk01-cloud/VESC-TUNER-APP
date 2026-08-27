@@ -240,9 +240,20 @@ struct McConf {
     float l_battery_cut_end   =  58.f;
     float l_temp_mot_start    =  80.f;
     float l_temp_mot_end      =  90.f;
+    float l_temp_motor_start  =  80.f;
+    float l_temp_motor_end    =  90.f;
+    float l_min_erpm          = -70000.f;
+    float l_min_vin           =  18.f;
+    float l_max_vin           =  95.f;
+    float l_battery_regen_cut_start = 100.f;
+    float l_battery_regen_cut_end   = 110.f;
     int   foc_sensor_mode     =   2;
     int   si_motor_poles      =  15;
     bool  loaded              = false;
+    // True only when the blob's confgenerator signature is one whose offsets we
+    // have actually verified. Everything above is a struct default until then,
+    // and defaults must never be written out as if they came from the board.
+    bool  limitsKnown         = false;
 };
 
 // ── Device profile (built from mcconf + saved to /device_profile.json) ───────
@@ -999,16 +1010,53 @@ static void saveProfileToSD();         // forward decl
 #define MC_OFF_CURR_IN    17
 #define MC_OFF_CURR_IN_MIN 21
 #define MC_OFF_ABS_CURR   29
+// Rest of the limits block, resolved from session 020 by diffing the captured
+// blob against the board's own VESC Tool XML export. The order matches
+// mc_configuration in datatypes.h exactly: min_vin, max_vin, cut_start, cut_end,
+// regen_start, regen_end as consecutive int16/10, then four temperature limits
+// as plain bytes. All twelve verified against ground truth, none guessed.
+#define MC_OFF_MIN_ERPM    33     // f32
+#define MC_OFF_MAX_ERPM    37     // f32
+#define MC_OFF_MIN_VIN     51     // i16 /10
+#define MC_OFF_MAX_VIN     53     // i16 /10
+#define MC_OFF_BATT_CUT_S  55     // i16 /10
+#define MC_OFF_BATT_CUT_E  57     // i16 /10
+#define MC_OFF_REGEN_CUT_S 59     // i16 /10
+#define MC_OFF_REGEN_CUT_E 61     // i16 /10
+#define MC_OFF_TEMP_FET_S  64     // u8
+#define MC_OFF_TEMP_FET_E  65     // u8
+#define MC_OFF_TEMP_MOT_S  66     // u8
+#define MC_OFF_TEMP_MOT_E  67     // u8
+// These offsets belong to ONE confgenerator layout. The other board reports
+// signature 3f829cf7 / 478 B and lays the struct out differently, so applying
+// them there would produce confident nonsense.
+#define MC_SIG_KNOWN      0x2EFD0142UL
 
 static void parseMcConf(const uint8_t* p, int len) {
     if (len < 33 || p[0] != CMD_GET_MCCONF) return;
     gMC.l_current_max       = rdF32be(p, MC_OFF_CURR_MAX);
     gMC.l_in_current_max    = rdF32be(p, MC_OFF_CURR_IN);
-    // l_max_erpm / l_temp_fet_* / l_battery_cut_* sit deeper in the blob and their
-    // exact offsets depend on the confgenerator layout for this fw signature
-    // (0x2efd0142) — not yet confirmed, so they keep their safe struct defaults
-    // rather than logging garbage. buildProfileFromMcconf derives cells from
-    // measured voltage, so it no longer needs l_battery_cut_end.
+    // The deeper limits are only decodable for the layout we have verified. This
+    // used to write struct defaults into the session JSON regardless, which is
+    // worse than omitting them: session 020 recorded a 62 V cutoff for a board
+    // that actually cuts at 54 V, and nothing said the number was invented.
+    uint32_t sig = ((uint32_t)p[1] << 24) | ((uint32_t)p[2] << 16) |
+                   ((uint32_t)p[3] << 8)  |  (uint32_t)p[4];
+    gMC.limitsKnown = (sig == MC_SIG_KNOWN && len >= 68);
+    if (gMC.limitsKnown) {
+        gMC.l_min_erpm            = rdF32be(p, MC_OFF_MIN_ERPM);
+        gMC.l_max_erpm            = rdF32be(p, MC_OFF_MAX_ERPM);
+        gMC.l_min_vin             = rdI16(p, MC_OFF_MIN_VIN)     / 10.f;
+        gMC.l_max_vin             = rdI16(p, MC_OFF_MAX_VIN)     / 10.f;
+        gMC.l_battery_cut_start   = rdI16(p, MC_OFF_BATT_CUT_S)  / 10.f;
+        gMC.l_battery_cut_end     = rdI16(p, MC_OFF_BATT_CUT_E)  / 10.f;
+        gMC.l_battery_regen_cut_start = rdI16(p, MC_OFF_REGEN_CUT_S) / 10.f;
+        gMC.l_battery_regen_cut_end   = rdI16(p, MC_OFF_REGEN_CUT_E) / 10.f;
+        gMC.l_temp_fet_start      = p[MC_OFF_TEMP_FET_S];
+        gMC.l_temp_fet_end        = p[MC_OFF_TEMP_FET_E];
+        gMC.l_temp_motor_start    = p[MC_OFF_TEMP_MOT_S];
+        gMC.l_temp_motor_end      = p[MC_OFF_TEMP_MOT_E];
+    }
     gMC.loaded = true;
     // Build / refresh profile from fresh mcconf data
     if (!gSdOk || !SD.exists(PROFILE_PATH)) {
@@ -1024,13 +1072,28 @@ static void parseMcConf(const uint8_t* p, int len) {
     File f = SD.open(path, FILE_WRITE);
     if (!f) return;
     f.printf("{\n  \"_session\": \"%s\",\n", gSessName);
+    f.printf("  \"mcconf_sig\": \"%08lx\",\n", (unsigned long)sig);
     f.printf("  \"l_current_max\": %.2f,\n",       gMC.l_current_max);
-    f.printf("  \"l_in_current_max\": %.2f,\n",    gMC.l_in_current_max);
-    f.printf("  \"l_max_erpm\": %.0f,\n",           gMC.l_max_erpm);
-    f.printf("  \"l_temp_fet_start\": %.2f,\n",    gMC.l_temp_fet_start);
-    f.printf("  \"l_temp_fet_end\": %.2f,\n",      gMC.l_temp_fet_end);
-    f.printf("  \"l_battery_cut_start\": %.2f,\n", gMC.l_battery_cut_start);
-    f.printf("  \"l_battery_cut_end\": %.2f\n}\n", gMC.l_battery_cut_end);
+    f.printf("  \"l_in_current_max\": %.2f",        gMC.l_in_current_max);
+    // Only emit the deeper limits when this layout is the one we decoded. An
+    // absent field is honest; a defaulted one silently lies.
+    if (gMC.limitsKnown) {
+        f.printf(",\n  \"l_min_erpm\": %.0f,\n",   gMC.l_min_erpm);
+        f.printf("  \"l_max_erpm\": %.0f,\n",       gMC.l_max_erpm);
+        f.printf("  \"l_min_vin\": %.2f,\n",        gMC.l_min_vin);
+        f.printf("  \"l_max_vin\": %.2f,\n",        gMC.l_max_vin);
+        f.printf("  \"l_battery_cut_start\": %.2f,\n", gMC.l_battery_cut_start);
+        f.printf("  \"l_battery_cut_end\": %.2f,\n",   gMC.l_battery_cut_end);
+        f.printf("  \"l_battery_regen_cut_start\": %.2f,\n", gMC.l_battery_regen_cut_start);
+        f.printf("  \"l_battery_regen_cut_end\": %.2f,\n",   gMC.l_battery_regen_cut_end);
+        f.printf("  \"l_temp_fet_start\": %.0f,\n",  gMC.l_temp_fet_start);
+        f.printf("  \"l_temp_fet_end\": %.0f,\n",    gMC.l_temp_fet_end);
+        f.printf("  \"l_temp_motor_start\": %.0f,\n",gMC.l_temp_motor_start);
+        f.printf("  \"l_temp_motor_end\": %.0f",      gMC.l_temp_motor_end);
+    } else {
+        f.printf(",\n  \"_note\": \"limits not decoded: unknown mcconf layout\"");
+    }
+    f.printf("\n}\n");
     f.close();
 }
 
@@ -3504,7 +3567,9 @@ void loop() {
           Serial.printf("[RAW] WARNING dropped %lu bytes\n", (unsigned long)gRawDropped); } }
 
     // Close the capture once the board stops sending lines (or it never answered).
-    if (gFaultCapturing && now - gFaultCapStart > 900) {
+    // 2.5 s, not 900 ms: in session 020 the first capture closed having caught
+    // only the board's "-> faults" echo, and the answer itself landed later.
+    if (gFaultCapturing && now - gFaultCapStart > 2500) {
         gFaultCapturing = false;
         if (gFaultDumpLen > 0) { faultDumpParse(); faultDumpSave(); }
         else Serial.println("[FAULTDUMP] no reply (board may not support terminal over CAN)");
