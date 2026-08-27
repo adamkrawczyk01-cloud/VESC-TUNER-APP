@@ -49,6 +49,9 @@
 #define CMD_FORWARD_CAN     34   // 0x22 — wrap [34,canId,cmd] to reach the motor over CAN
 #define CMD_PING_CAN        62   // 0x3E — ESP32 bridge enumerates CAN device ids
 #define CMD_BMS_GET_VALUES  96   // 0x60 — Smart BMS values (cells + temps)
+#define CMD_CUSTOM_APP_DATA 36   // 0x24 — Refloat package commands
+#define REFLOAT_MAGIC      101
+#define REFLOAT_ALLDATA     10   // mode 1 (35 B) carries the footpad ADCs
 
 // Compiled profile — the HUD has no SD/mcconf, so speed & SOC use these constants.
 // Defaults match the Cardputer profile (GAD / ADV2 board). A different board would
@@ -59,7 +62,10 @@
 
 // ESP-NOW / display packet (shared render input for both sources)
 typedef struct __attribute__((packed)) {
-  uint8_t  magic, ver, board_id, flags;      // flags bit0=braking (reserved: rear light)
+  // flags: bit0 braking · bit1 footpad LEFT · bit2 footpad RIGHT · bit3 board link.
+  // bit3 is what separates "Cardputer is here but has no board" from "no Cardputer"
+  // — it broadcasts either way, so without the flag the wrist cannot tell them apart.
+  uint8_t  magic, ver, board_id, flags;
   uint8_t  batt_pct, duty_limit, motor_temp, batt_temp, fet_temp, gps_sats, cells, bright;
   int16_t  speed_x10, duty_x10;
   uint16_t pack_v_x10;
@@ -133,6 +139,8 @@ static volatile uint32_t  gLastRx = 0, gRxCount = 0;
 // ═════════════════════════════════════════════════════════════════════════════
 struct VescVals {
   float speed_kmh=0, duty_pct=0, temp_fet=0, temp_mot=0, temp_bat=0, voltage=0, curr_mot=0;
+  float adc1=0, adc2=0;            // footpad pressure, from Refloat ALLDATA
+  uint32_t allRx=0;                // millis() of the last ALLDATA reply
   uint8_t fault=0;
   bool valid=false, bms=false;
 };
@@ -362,9 +370,38 @@ static uint8_t computeAlertBle(){
   if (vc>2.5f && vc<3.25f) return 10;
   return 0;
 }
+// Refloat ALLDATA mode 1 — the only place the footpad ADCs are published.
+// GET_VALUES does not carry them, which is why the direct-BLE path had no footpad
+// state at all until now. Mode 1 is 35 B; mode 2 only adds distance and temps we
+// already read from GET_VALUES.
+static void vescSendAllData(){
+  if (!gCharRx || !gBleOk) return;
+  uint8_t pay[8]; int plen=0;
+  if (gCanId>=0){ pay[plen++]=CMD_FORWARD_CAN; pay[plen++]=(uint8_t)gCanId; }
+  pay[plen++]=CMD_CUSTOM_APP_DATA; pay[plen++]=REFLOAT_MAGIC;
+  pay[plen++]=REFLOAT_ALLDATA;     pay[plen++]=1;
+  uint8_t pkt[16]; int len=buildPkt(pkt,pay,plen);
+  gCharRx->writeValue(pkt,len,!gUseWriteNoResp);
+}
+// Offsets verified against refloat/src/main.c cmd_send_all_data(): the reply is
+// wrapped as COMM_CUSTOM_APP_DATA, so every index is that function's buffer
+// position + 1. p[3]==69 marks a fault frame with the fields zeroed.
+static void parseAllData(const uint8_t* p, int len){
+  if (len < 35 || p[1]!=REFLOAT_MAGIC || p[2]!=REFLOAT_ALLDATA) return;
+  if (p[3]==69) return;
+  gV.adc1 = p[12]/50.0f;
+  gV.adc2 = p[13]/50.0f;
+  gV.allRx = millis();
+}
+
 static void packFromBle(hud_pkt_t& p){
   p.magic=PKT_MAGIC; p.ver=1; p.board_id=1;
-  uint8_t fl=0; if (gV.curr_mot<-8.f) fl|=0x01; p.flags=fl;
+  uint8_t fl=0;
+  if (gV.curr_mot<-8.f) fl|=0x01;
+  if (gV.adc1>0.25f)    fl|=0x02;
+  if (gV.adc2>0.25f)    fl|=0x04;
+  if (gBleOk && gV.valid) fl|=0x08;      // the HUD itself holds the board link
+  p.flags=fl;
   float soc=batterySocBle();
   p.batt_pct=(uint8_t)(soc<0.f?0:constrain((int)(soc*100.f),0,100));
   p.duty_limit=80;
@@ -389,7 +426,7 @@ enum Ui     { UI_SELECT, UI_CONNECTING, UI_RUN };
 static Source gSrc = SRC_ESPNOW;
 static Ui     gUi  = UI_RUN;
 static int    gSelIdx = 0;
-static uint32_t gLastValMs = 0, gLastBmsMs = 0;
+static uint32_t gLastValMs = 0, gLastBmsMs = 0, gLastAllMs = 0;
 
 // screen pages: short-click cycles; long-press cycles brightness (6 levels)
 enum { PG_SPEED, PG_BATT, PG_BATTV, PG_CELLV, PG_TEMP, PG_BTEMP, PG_FTEMP, PG_DUTY, PG_GPS, PG_COUNT };
@@ -465,9 +502,28 @@ static void drawScreen(bool link, const hud_pkt_t& p){
     default:       lab="SPEED km/h"; snprintf(v,sizeof(v),"%d", (int)roundf(spd));
   }
   if (!link) strcpy(v, "--");
-  if (gPage==gLastPg && link==gLastLink && strcmp(v,gLastStr)==0){
+
+  // Three status dots, drawn on EVERY page. They answer the two questions you
+  // cannot afford to guess at while riding: where is my data coming from, and are
+  // both pads reading. Folded into the redraw guard below — the screen only
+  // repaints on change, so without this the dots would freeze until the number
+  // happened to move.
+  //   dot 1  source: GREEN Cardputer has the board · YELLOW Cardputer here but no
+  //          board · BLUE HUD holds the board itself · RED nothing
+  //   dot 2/3  footpads left/right: GREEN pressed, RED released
+  uint16_t dotSrc;
+  if (gSrc == SRC_BLE)              dotSrc = (link ? TFT_BLUE : TFT_RED);
+  else if (!link)                   dotSrc = TFT_RED;          // no fresh ESP-NOW
+  else if (p.flags & 0x08)          dotSrc = TFT_GREEN;        // Cardputer + board
+  else                              dotSrc = TFT_YELLOW;       // Cardputer, no board
+  bool fp1 = link && (p.flags & 0x02), fp2 = link && (p.flags & 0x04);
+  uint8_t dotSig = (uint8_t)((dotSrc==TFT_GREEN?1:dotSrc==TFT_YELLOW?2:dotSrc==TFT_BLUE?3:0)
+                             | (fp1?0x10:0) | (fp2?0x20:0));
+
+  static uint8_t gLastDotSig = 0xFF;
+  if (gPage==gLastPg && link==gLastLink && dotSig==gLastDotSig && strcmp(v,gLastStr)==0){
     if (gFlip != gLastPushFlip){ pushScreen(); gLastPushFlip=gFlip; } return; }
-  gLastPg=gPage; gLastLink=link; strncpy(gLastStr, v, sizeof(gLastStr)-1);
+  gLastPg=gPage; gLastLink=link; gLastDotSig=dotSig; strncpy(gLastStr, v, sizeof(gLastStr)-1);
 
   const int W = scr.width(), H = scr.height(), BAR = 28;
   scr.fillScreen(TFT_BLACK);
@@ -480,6 +536,15 @@ static void drawScreen(bool link, const hud_pkt_t& p){
   for (; s > 1; s--){ scr.setTextSize(s); if (scr.textWidth(v) <= W-6 && scr.fontHeight() <= H-BAR-6) break; }
   scr.setTextSize(s); scr.setTextDatum(middle_center);
   scr.drawString(v, W/2, BAR + (H-BAR)/2);
+
+  // Bottom edge, centred: source · pad L · pad R. Small enough to stay out of the
+  // way of the big number, low enough to sit in peripheral vision rather than
+  // competing with the reading you actually came to the screen for.
+  const int DR = 4, GAP = 14, DY = H - DR - 3;
+  scr.fillCircle(W/2 - GAP, DY, DR, dotSrc);
+  scr.fillCircle(W/2,       DY, DR, fp1 ? TFT_GREEN : TFT_RED);
+  scr.fillCircle(W/2 + GAP, DY, DR, fp2 ? TFT_GREEN : TFT_RED);
+
   pushScreen(); gLastPushFlip = gFlip;
 }
 static void drawAlertScreen(const AlertDef& ad){
@@ -572,7 +637,7 @@ static bool bleConnect(const NimBLEAddress& addr){
   { Preferences pr; pr.begin("vesc",false);
     pr.putString("lastmac",addr.toString().c_str()); pr.putString("lastname",nm); pr.end(); }
 
-  gLastValMs=0; gLastBmsMs=0; gLastPg=-1;
+  gLastValMs=0; gLastBmsMs=0; gLastAllMs=0; gLastPg=-1;
   return true;
 }
 static void bleScan(){                          // populate the filtered picker list
@@ -714,6 +779,7 @@ void loop(){
     uint32_t now=millis();
     if (now-gLastValMs >= 40){ gLastValMs=now; vescSend(CMD_GET_VALUES); }
     if (now-gLastBmsMs >= 300){ gLastBmsMs=now; vescSend(CMD_BMS_GET_VALUES); vescSendRawCmd(CMD_BMS_GET_VALUES); }
+    if (now-gLastAllMs >= 100){ gLastAllMs=now; vescSendAllData(); }   // footpads
   }
   if (gRxReady){
     gRxReady=false; const uint8_t* pay; int plen;
@@ -721,6 +787,7 @@ void loop(){
       switch (pay[0]){
         case CMD_GET_VALUES:     parseValues(pay,plen); break;
         case CMD_BMS_GET_VALUES: parseBms(pay,plen);    break;
+        case CMD_CUSTOM_APP_DATA: parseAllData(pay,plen); break;
       }
     }
   }

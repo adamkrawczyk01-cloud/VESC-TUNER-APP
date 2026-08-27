@@ -3326,9 +3326,16 @@ static void espnowSend() {
     if (!gEspNowOk) return;   // send even without VESC (so GPS sats show pre-ride; VESC fields 0)
     hud_pkt_t p;
     p.magic = 0xBE; p.ver = 1; p.board_id = 1;
+    // flags: bit0 braking · bit1 footpad LEFT · bit2 footpad RIGHT · bit3 board link
+    // The pads used to share one "either is down" bit; the HUD shows them as two
+    // separate dots, so they travel separately now. bit3 exists because we
+    // broadcast even without a board (so pre-ride GPS shows on the wrist) — without
+    // it, "Cardputer here but no board" and "Cardputer gone" look identical there.
     uint8_t fl = 0;
-    if (gV.curr_mot < -8.f)                 fl |= 0x01;   // regen / braking
-    if (gV.adc1 > 0.25f || gV.adc2 > 0.25f) fl |= 0x02;   // footpad engaged
+    if (gV.curr_mot < -8.f) fl |= 0x01;   // regen / braking
+    if (gV.adc1 > 0.25f)    fl |= 0x02;   // footpad left
+    if (gV.adc2 > 0.25f)    fl |= 0x04;   // footpad right
+    if (gBleOk && gV.valid && millis() - gLastValRx < 1500) fl |= 0x08;
     p.flags = fl;
     float soc = batterySoc();   // same voltage-based SOC the deck screen trusts (not gV.batt_pct)
     p.batt_pct   = (uint8_t)(soc < 0.f ? 0 : constrain((int)(soc * 100.f), 0, 100));
