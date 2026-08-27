@@ -4,6 +4,31 @@ Narzędzie do precyzyjnego tuningu kontrolerów VESC na urządzeniu M5Stack Card
 Loguje telemetrię jazdy, snapshot konfiguracji VESC i generuje bezpieczne sugestie zmian
 z uzasadnieniem opartym na rzeczywistych danych.
 
+## Credits — VESCape
+
+Parts of the design here are borrowed, **as ideas**, from
+[VESCape](https://github.com/vescape-app/vescape) (GPL-3.0). Their ADRs are unusually
+good engineering documentation, and several of them solved problems this project
+had already run into the hard way:
+
+| their ADR | what it fixed here |
+|---|---|
+| 0024 debug recording + replay | the raw-BLE `.jsonl` capture — which then immediately exposed a packet-drop bug we had misdiagnosed twice |
+| 0013 hot/cold split | we were requesting the heavier Refloat ALLDATA payload on every poll and starving that feed |
+| 0011 / 0016 IR-compensated SoC | battery % diving on every hill |
+| 0008 sanitizers mark, never delete | the web analyser used to null out "impossible" samples, which destroys evidence you later need |
+| 0021 idle pause | long parked tails bloating the logs |
+
+**No VESCape code was copied.** This repo has no license file and is not
+GPL-licensed, so taking code was never an option. What was taken is the *shape of
+the Debug Recording line format*, reimplemented from its documented layout — with
+the useful side effect that recordings are interchangeable both ways.
+`web/jsonl.js` here opens VESCape's own `replay-thor301.jsonl` fixture, and the
+Cardputer writes the same format.
+
+Their source is kept out of this repo entirely (see `.gitignore`), the same way
+the Refloat firmware source is.
+
 ## Architektura
 
 ```
