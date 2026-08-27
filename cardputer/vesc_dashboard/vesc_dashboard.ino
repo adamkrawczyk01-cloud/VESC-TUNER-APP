@@ -689,9 +689,17 @@ static void rawWriteMeta() {
     gRawChunks = 0; gRawBytes = 0; gRawDropped = 0;
 }
 
-// Drain the queue to the card. One open per flush, not per chunk.
-static void rawPump() {
+// Drain the queue to the card. One open per flush, not per chunk — and NOT on
+// every loop pass. The HUD feed is a 33 ms deadline and the CSV already costs an
+// open/append/close every 83 ms; a second unthrottled writer would eat the loop
+// and quietly drop the HUD's update rate. Flush on a 250 ms tick, or earlier if
+// the queue is over half full.
+static void rawPump(bool force = false) {
     if (!gRawRec || !gRec || !gSdOk || gRawQLen == 0) return;
+    static uint32_t lastFlush = 0;
+    uint32_t flushNow = millis();
+    if (!force && flushNow - lastFlush < 250 && gRawQLen < sizeof(gRawQ) / 2) return;
+    lastFlush = flushNow;
     static uint8_t buf[2048];
     uint16_t n;
     portENTER_CRITICAL(&gRawMux);
@@ -1563,7 +1571,7 @@ static void startSession() {
 }
 static void stopSession() {
     if (!gRec) return;
-    rawPump();                                   // flush whatever is still queued
+    while (gRawQLen) rawPump(true);              // drain everything, not one bufferful
     rawWriteMarker("recording-stopped");
     Serial.printf("[LOG] stop %s  raw: %lu chunks / %lu B / dropped %lu\n",
                   gSessName, (unsigned long)gRawChunks, (unsigned long)gRawBytes,
